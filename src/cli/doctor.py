@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,26 +13,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 def _run_cmd(cmd: List[str] | str, timeout: int = 10) -> Tuple[bool, str]:
-    """Execute command safely and capture output."""
+    """Execute command safely and capture output without shell=True."""
     try:
         if isinstance(cmd, str):
-            res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                shell=True,
-                timeout=timeout,
-            )
+            argv = shlex.split(cmd, posix=False)
         else:
-            # On Windows, .cmd or .bat files require shell=True or cmd /c
-            is_cmd_file = any(arg.lower().endswith((".cmd", ".bat")) for arg in cmd)
-            res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                shell=is_cmd_file or sys.platform == "win32",
-                timeout=timeout,
-            )
+            argv = list(cmd)
+        if argv and argv[0].lower().endswith((".cmd", ".bat")):
+            argv = ["cmd.exe", "/d", "/s", "/c", *argv]
+        res = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout,
+        )
         out = (res.stdout or res.stderr or "").strip()
         return res.returncode == 0, out
     except Exception as e:
@@ -168,7 +164,7 @@ def run_doctor(repo_root: Optional[Path | str] = None) -> Dict[str, Any]:
 
         if wrapper_exists:
             # Test wrapper first
-            cmd = f'cmd /c "{wrapper_path}" --version'
+            cmd = ["cmd.exe", "/d", "/s", "/c", str(wrapper_path), "--version"]
             ok, out = _run_cmd(cmd, timeout=10)
             if ok and out:
                 probe_ok = True
@@ -176,7 +172,7 @@ def run_doctor(repo_root: Optional[Path | str] = None) -> Dict[str, Any]:
             else:
                 error_msg = out or "Wrapper execution failed"
         elif exe_exists:
-            cmd = f'"{exe_path}" --version'
+            cmd = [str(exe_path), "--version"]
             ok, out = _run_cmd(cmd, timeout=10)
             if ok and out:
                 probe_ok = True

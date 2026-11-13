@@ -185,6 +185,8 @@ class TestDashboardServer(unittest.TestCase):
     def _request(self, path: str, method: str = "GET", data: dict | None = None) -> dict:
         url = self.base_url + path
         headers = {"Content-Type": "application/json"} if data is not None else {}
+        if method.upper() in ("POST", "DELETE", "PUT", "PATCH"):
+            headers["X-Orchestra-CSRF"] = getattr(self.server, "csrf_token", "")
         body = json.dumps(data).encode("utf-8") if data is not None else None
         req = urllib.request.Request(url, headers=headers, data=body, method=method)
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -232,6 +234,29 @@ class TestDashboardServer(unittest.TestCase):
         sub_res = self._request(f"/api/jobs/{job_id}/submit", method="POST", data={"response": b_reply})
         self.assertTrue(sub_res.get("ok"))
         self.assertEqual(sub_res.get("accepted_role"), "B")
+
+        # Conflict check: second submission of completed reply for role B without allow_overwrite is rejected with 409
+        url = self.base_url + f"/api/jobs/{job_id}/submit"
+        req_conflict = urllib.request.Request(
+            url,
+            headers={"Content-Type": "application/json", "X-Orchestra-CSRF": getattr(self.server, "csrf_token", "")},
+            data=json.dumps({"response": b_reply}).encode("utf-8"),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req_conflict, timeout=5) as r:
+                conf_code = r.status
+        except urllib.error.HTTPError as exc:
+            conf_code = exc.code
+        self.assertEqual(conf_code, 409)
+
+        # Overwrite with allow_overwrite: True succeeds
+        sub_overwrite = self._request(
+            f"/api/jobs/{job_id}/submit",
+            method="POST",
+            data={"response": b_reply, "allow_overwrite": True},
+        )
+        self.assertTrue(sub_overwrite.get("ok"))
 
     def test_registry_endpoints(self) -> None:
         # Add asset

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 import threading
@@ -28,6 +30,8 @@ from src.mcp.proxy_mcp import (
     BUILTIN_PRESETS,
     ExternalMCPRegistry,
     probe_external_mcp,
+    redact_env,
+    encrypt_env,
 )
 from src.sandbox.path_guard import PathViolation
 from src.webui.settings_store import DashboardSettingsStore
@@ -45,7 +49,6 @@ from src.workers.webui_packet_worker import (
     verify_and_import_response,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 JOB_ID_RE = re.compile(r"^[0-9a-zA-Z_-]{8,64}$")
 MAX_REQUEST_BYTES = 256 * 1024
@@ -58,6 +61,22 @@ HEALTH_MODELS = [
     "claude-sonnet-5.5",
     "gemini-4-argon (review-only)",
 ]
+
+
+def load_or_create_reviewer_token(key_path: Optional[Path] = None) -> str:
+    """Load or generate the reviewer token for X-Orchestra-Reviewer-Token validation."""
+    env_token = os.environ.get("ORCHESTRA_REVIEWER_TOKEN")
+    if env_token:
+        return env_token.strip()
+    kp = Path(key_path) if key_path else (REPO_ROOT / ".runtime" / "keys" / "reviewer.key")
+    if kp.is_file():
+        content = kp.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    kp.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    kp.write_text(token, encoding="utf-8")
+    return token
 
 
 class RegistryStore:
@@ -347,7 +366,12 @@ class HubStore:
                     continue
             return jobs
 
-    def submit_reply(self, job_id: str, response: Dict[str, Any]) -> Dict[str, Any]:
+    def submit_reply(
+        self,
+        job_id: str,
+        response: Dict[str, Any],
+        allow_overwrite: bool = False,
+    ) -> Dict[str, Any]:
         with self._lock:
             state = self._read_state(job_id)
             if not isinstance(response, dict):
@@ -360,13 +384,22 @@ class HubStore:
             if role not in packets:
                 raise ValueError(f"Unknown context_id/role '{role}'. Job contains roles: {list(packets.keys())}")
 
+            replies = state.setdefault("replies", {})
+            if role in replies:
+                prior = replies[role]
+                prior_resp = prior.get("response", {})
+                if prior_resp.get("status") == "completed":
+                    if not allow_overwrite:
+                        raise ValueError(f"Conflict: Role '{role}' already has a completed reply for job '{job_id}'")
+                    state.setdefault("reply_history", []).append(prior)
+
             packet = packets[role]
             now = utc_now()
             validation = verify_and_import_response(packet, response, received_at=now)
             if not validation.get("valid"):
                 raise ValueError(f"Response validation failed: {', '.join(validation.get('issues', []))}")
 
-            state.setdefault("replies", {})[role] = {
+            replies[role] = {
                 "response": response,
                 "received_utc": iso_utc(now),
             }
@@ -375,9 +408,11 @@ class HubStore:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """Strict HTTP request handler bound only to localhost."""
+    """Strict HTTP request handler bound only to localhost with CSRF & Host validation."""
 
     store: HubStore
+    server_csrf_token: str = ""
+    reviewer_token: str = ""
 
     def log_message(self, format: str, *args: Any) -> None:
         pass  # Suppress default noisy stdio logging during test runs
@@ -387,7 +422,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -402,17 +436,114 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _validate_host(self) -> bool:
+        host_header = self.headers.get("Host")
+        if not host_header:
+            return True  # Tolerate missing Host header for raw/HTTP 1.0 test clients
+        host = host_header.strip()
+        if host.startswith("["):
+            bracket_idx = host.find("]")
+            if bracket_idx != -1:
+                host_val = host[1:bracket_idx]
+            else:
+                host_val = host
+        else:
+            host_val = host.split(":")[0]
+        return host_val.lower() in ("127.0.0.1", "localhost", "::1")
+
+    def _validate_csrf_and_security(self, is_post: bool = False) -> Optional[tuple[int, dict]]:
+        if not self._validate_host():
+            return 403, {"error": "Forbidden: Invalid Host header"}
+
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                parsed_origin = urlsplit(origin)
+                origin_host = parsed_origin.hostname or ""
+                origin_port = parsed_origin.port
+                if origin_port is None:
+                    if parsed_origin.scheme == "http":
+                        origin_port = 80
+                    elif parsed_origin.scheme == "https":
+                        origin_port = 443
+            except Exception:
+                origin_host = ""
+                origin_port = None
+            if origin_host.lower() not in ("127.0.0.1", "localhost", "::1"):
+                return 403, {"error": "Forbidden: Invalid Origin header"}
+            if origin_port is not None:
+                server_port = getattr(self.server, "server_port", None)
+                host_port = None
+                host_header = self.headers.get("Host", "")
+                if ":" in host_header and not host_header.endswith("]"):
+                    try:
+                        host_port = int(host_header.rsplit(":", 1)[1])
+                    except ValueError:
+                        pass
+                expected_port = server_port or host_port
+                if expected_port is not None and origin_port != expected_port:
+                    return 403, {"error": f"Forbidden: Cross-port origin rejected ({origin_port} != {expected_port})"}
+
+        fetch_site = self.headers.get("Sec-Fetch-Site")
+        if fetch_site and fetch_site.lower() not in ("same-origin", "none"):
+            return 403, {"error": "Forbidden: Untrusted Sec-Fetch-Site"}
+
+        if is_post:
+            content_type = self.headers.get("Content-Type")
+            if content_type is not None:
+                if not content_type.strip().lower().startswith("application/json"):
+                    return 415, {"error": "Unsupported Media Type: Content-Type must be application/json"}
+
+            length_header = self.headers.get("Content-Length")
+            if length_header:
+                try:
+                    length = int(length_header)
+                except ValueError:
+                    return 400, {"error": "Invalid Content-Length header"}
+                if length < 0:
+                    return 400, {"error": "Negative Content-Length header is not allowed"}
+                if length > 0 and content_type is None:
+                    return 415, {"error": "Unsupported Media Type: Content-Type must be application/json"}
+
+        # Strict CSRF enforcement on state-changing endpoints
+        csrf_header = self.headers.get("X-Orchestra-CSRF", "").strip()
+        server_csrf = getattr(self, "server_csrf_token", "")
+        if not csrf_header or not server_csrf or not hmac.compare_digest(csrf_header, server_csrf):
+            return 403, {"error": "Forbidden: Missing or invalid X-Orchestra-CSRF token"}
+
+        return None
+
+    def _is_valid_reviewer(self) -> bool:
+        token_header = self.headers.get("X-Orchestra-Reviewer-Token", "").strip()
+        expected_token = getattr(self, "reviewer_token", "") or os.environ.get("ORCHESTRA_REVIEWER_TOKEN", "")
+        if not expected_token:
+            kp = REPO_ROOT / ".runtime" / "keys" / "reviewer.key"
+            if kp.is_file():
+                expected_token = kp.read_text(encoding="utf-8").strip()
+        if token_header and expected_token and hmac.compare_digest(token_header, expected_token):
+            return True
+        return False
+
     def _read_json_body(self) -> Dict[str, Any]:
         length_header = self.headers.get("Content-Length")
         if not length_header:
             return {}
-        length = int(length_header)
+        try:
+            length = int(length_header)
+        except ValueError:
+            raise ValueError("Invalid Content-Length header")
+        if length < 0:
+            raise ValueError("Negative Content-Length header is not allowed")
         if length > MAX_REQUEST_BYTES:
             raise ValueError(f"Payload exceeds maximum allowed size ({MAX_REQUEST_BYTES} bytes)")
         body = self.rfile.read(length).decode("utf-8")
         return json.loads(body) if body.strip() else {}
 
     def do_GET(self) -> None:
+        if not self._validate_host():
+            self._send_json(403, {"error": "Forbidden: Invalid Host header"})
+            return
+
         parsed = urlsplit(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -422,6 +553,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             workdir_info = self.store.settings.get_workdir()
             self._send_json(200, {
                 "ok": True,
+                "csrf_token": getattr(self, "server_csrf_token", ""),
                 "providers": list(PROVIDERS),
                 "clis": list(CLIS),
                 "models": list(HEALTH_MODELS),
@@ -444,7 +576,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/mcp/external":
             self._send_json(200, {
                 "ok": True,
-                "servers": self.store.external_mcp.list_servers(),
+                "servers": self.store.external_mcp.list_servers(redact_secrets=True),
                 "presets": BUILTIN_PRESETS,
                 "config_path": str(self.store.external_mcp.file_path),
             })
@@ -452,7 +584,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # List jobs
         if path == "/api/jobs":
-            limit = int(query.get("limit", [30])[0])
+            raw_limit = query.get("limit", ["30"])[0]
+            try:
+                limit = int(raw_limit)
+            except (ValueError, TypeError):
+                self._send_json(400, {"error": "Invalid 'limit' query parameter (must be an integer)"})
+                return
+            limit = max(1, min(200, limit))
             jobs = self.store.list_jobs(limit=limit)
             self._send_json(200, {"jobs": jobs})
             return
@@ -478,9 +616,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"items": items})
             return
 
-        # Static file delivery
+        # Static file delivery with CSRF token substitution
         if path in ("/", "/index.html", "/dashboard.html"):
-            self._send_file(STATIC_DIR / "dashboard.html", "text/html; charset=utf-8")
+            html_file = STATIC_DIR / "dashboard.html"
+            if not html_file.is_file():
+                self.send_error(404, "File not found")
+                return
+            raw_html = html_file.read_text(encoding="utf-8")
+            rendered = raw_html.replace("{{CSRF_TOKEN}}", getattr(self, "server_csrf_token", ""))
+            data = rendered.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         if path == "/dashboard.css":
             self._send_file(STATIC_DIR / "dashboard.css", "text/css; charset=utf-8")
@@ -492,6 +641,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(404, "Endpoint not found")
 
     def do_POST(self) -> None:
+        sec_err = self._validate_csrf_and_security(is_post=True)
+        if sec_err:
+            self._send_json(sec_err[0], sec_err[1])
+            return
+
         parsed = urlsplit(self.path)
         path = parsed.path
 
@@ -501,7 +655,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 body = self._read_json_body()
                 case_id = str(body.get("case_id", "DISPATCH-001"))
                 scenario = str(body.get("scenario", "")).strip()
-                ttl = int(body.get("ttl", 300))
+                raw_ttl = body.get("ttl", body.get("timeout_seconds", 300))
+                try:
+                    ttl = int(raw_ttl)
+                except (ValueError, TypeError):
+                    self._send_json(400, {"error": "Invalid ttl/timeout_seconds (must be an integer)"})
+                    return
+                ttl = max(1, min(3600, ttl))
                 job_id = body.get("job_id")
                 provider_map = body.get("provider_map")
                 model = body.get("model")
@@ -525,7 +685,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 body = self._read_json_body()
                 resp_payload = body.get("response", body)
-                view = self.store.submit_reply(job_id, resp_payload)
+                allow_overwrite = bool(body.get("allow_overwrite", False))
+                view = self.store.submit_reply(job_id, resp_payload, allow_overwrite=allow_overwrite)
                 self._send_json(200, {
                     "ok": True,
                     "job_id": job_id,
@@ -535,7 +696,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 self._send_json(404, {"error": f"Job '{job_id}' not found"})
             except ValueError as e:
-                self._send_json(400, {"error": str(e)})
+                err_msg = str(e)
+                status = 409 if err_msg.startswith("Conflict:") else 400
+                self._send_json(status, {"error": err_msg})
             return
 
         # Registry add
@@ -553,7 +716,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 body = self._read_json_body()
                 candidate = body.get("working_directory", body.get("workdir", body.get("path", "")))
-                role = str(self.headers.get("X-Orchestra-Role") or body.get("role") or "operator")
+                candidate_role = str(
+                    self.headers.get("X-Orchestra-Role")
+                    or body.get("user_role")
+                    or body.get("role")
+                    or "operator"
+                ).strip().lower()
+                if candidate_role == "reviewer":
+                    if not self._is_valid_reviewer():
+                        self._send_json(403, {"error": "Forbidden: 'reviewer' operations require a valid X-Orchestra-Reviewer-Token header"})
+                        return
+                    role = "reviewer"
+                else:
+                    role = "operator"
                 info = self.store.settings.set_workdir(candidate, role=role)
                 self._send_json(200, {"ok": True, **info})
             except PathViolation as e:
@@ -562,16 +737,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": str(e)})
             return
 
-        # Update Dashboard Settings (DB-backed; model_policy_overrides requires 'reviewer' role)
-        if path == "/api/settings":
+        # Update Dashboard Settings or Model Policy Overrides
+        if path in ("/api/settings", "/api/settings/model-policy"):
             try:
                 body = self._read_json_body()
-                role = str(
+                requested_role = str(
                     self.headers.get("X-Orchestra-Role")
                     or body.get("user_role")
                     or body.get("role")
                     or "operator"
+                ).strip().lower()
+
+                wants_reviewer = (
+                    requested_role == "reviewer"
+                    or str(body.get("role") or "").strip().lower() == "reviewer"
+                    or str(body.get("user_role") or "").strip().lower() == "reviewer"
+                    or "model_policy_overrides" in body
+                    or path == "/api/settings/model-policy"
                 )
+                if wants_reviewer:
+                    if not self._is_valid_reviewer():
+                        self._send_json(403, {"error": "Forbidden: 'reviewer' operations require a valid X-Orchestra-Reviewer-Token header"})
+                        return
+                    role = "reviewer"
+                else:
+                    role = "operator"
+
+                if path == "/api/settings/model-policy":
+                    updated_pol = self.store.settings.set_model_policy_overrides(body, role=role)
+                    self._send_json(200, {"ok": True, "model_policy_overrides": updated_pol})
+                    return
+
                 updated = self.store.settings.update_settings(
                     body,
                     role=role,
@@ -593,13 +789,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 entry = self.store.external_mcp.register_server(body)
                 self.store.settings._set_raw(
                     "external_mcp_servers",
-                    self.store.external_mcp.read_map(),
+                    self.store.external_mcp._read_raw().get("mcpServers", {}),
                     role="operator",
                 )
                 self._send_json(201, {
                     "ok": True,
                     "server": entry,
-                    "servers": self.store.external_mcp.list_servers(),
+                    "servers": self.store.external_mcp.list_servers(redact_secrets=True),
                 })
             except PathViolation as e:
                 self._send_json(403, {"error": str(e), "code": e.code})
@@ -607,31 +803,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": str(e)})
             return
 
-        # Probe External MCP Server (e.g. Lnwjud)
+        # Probe External MCP Server (e.g. Lnwjud) - locked down to prevent arbitrary command execution
         if path == "/api/mcp/external/probe":
             try:
                 body = self._read_json_body()
                 name = str(body.get("name", "")).strip()
                 srv = None
                 if name:
-                    srv = self.store.external_mcp.get_server(name) or BUILTIN_PRESETS.get(name)
-                if srv is None and body.get("command"):
-                    srv = {
-                        "name": name or "custom",
-                        "command": body.get("command"),
-                        "args": body.get("args", []),
-                        "env": body.get("env", {}),
-                        "enabled": True,
-                        "working_directory": body.get("working_directory", ""),
-                    }
+                    srv = self.store.external_mcp.get_server(name, redact_secrets=False) or BUILTIN_PRESETS.get(name)
                 if srv is None:
+                    if body.get("command"):
+                        self._send_json(403, {"error": "Forbidden: Probing arbitrary unregistered commands is blocked"})
+                        return
                     self._send_json(404, {"error": f"External MCP server '{name}' not found"})
                     return
                 workdir = self.store.settings.get_workdir()["working_directory"]
+                timeout_val = max(1.0, min(3600.0, float(body.get("timeout", 5.0))))
                 probe = probe_external_mcp(
                     srv,
                     live_handshake=bool(body.get("live_handshake", False)),
-                    timeout=float(body.get("timeout", 5.0)),
+                    timeout=timeout_val,
                     cwd=workdir,
                 )
                 self._send_json(200, {"ok": True, "probe": probe})
@@ -650,10 +841,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self.store.settings._set_raw(
                     "external_mcp_servers",
-                    self.store.external_mcp.read_map(),
+                    self.store.external_mcp._read_raw().get("mcpServers", {}),
                     role="operator",
                 )
-                self._send_json(200, {"ok": True, "removed": name, "servers": self.store.external_mcp.list_servers()})
+                self._send_json(200, {"ok": True, "removed": name, "servers": self.store.external_mcp.list_servers(redact_secrets=True)})
             except Exception as e:
                 self._send_json(400, {"error": str(e)})
             return
@@ -661,6 +852,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(404, "Endpoint not found")
 
     def do_DELETE(self) -> None:
+        sec_err = self._validate_csrf_and_security(is_post=False)
+        if sec_err:
+            self._send_json(sec_err[0], sec_err[1])
+            return
+
         parsed = urlsplit(self.path)
         path = parsed.path
         if path.startswith("/api/mcp/external/"):
@@ -671,10 +867,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self.store.settings._set_raw(
                 "external_mcp_servers",
-                self.store.external_mcp.read_map(),
+                self.store.external_mcp._read_raw().get("mcpServers", {}),
                 role="operator",
             )
-            self._send_json(200, {"ok": True, "removed": name, "servers": self.store.external_mcp.list_servers()})
+            self._send_json(200, {"ok": True, "removed": name, "servers": self.store.external_mcp.list_servers(redact_secrets=True)})
             return
         self.send_error(404, "Endpoint not found")
 
@@ -704,10 +900,21 @@ class DashboardServer:
             settings_db_path=settings_db_path,
         )
 
+        self.csrf_token = secrets.token_urlsafe(32)
+        key_file = (self.storage_dir.parent / "keys" / "reviewer.key") if self.storage_dir else None
+        self.reviewer_token = load_or_create_reviewer_token(key_file)
+
+        csrf_tok = self.csrf_token
+        rev_tok = self.reviewer_token
+
         class CustomHandler(DashboardHandler):
             store = self.store
+            server_csrf_token = csrf_tok
+            reviewer_token = rev_tok
 
         self.httpd = ThreadingHTTPServer((self.host, self.requested_port), CustomHandler)
+        self.port = self.httpd.server_port
+        self._thread: Optional[threading.Thread] = None
         self.port = self.httpd.server_port
         self._thread: Optional[threading.Thread] = None
 

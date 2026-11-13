@@ -6,10 +6,17 @@ import hashlib
 import json
 import os
 import re
-from pathlib import PureWindowsPath, PurePosixPath
 from typing import Any, Dict, List, Tuple, Union
 
 from src.contracts.models import JobContract
+from src.sandbox.path_guard import PathViolation, validate_relative_path
+
+_VIOLATION_LABELS: Dict[str, str] = {
+    "PATH_TRAVERSAL": "Parent traversal ('..') rejected",
+    "DRIVE_PATH": "Absolute drive path rejected",
+    "UNC_PATH": "UNC path rejected",
+    "ABSOLUTE_PATH": "Root-absolute path rejected",
+}
 
 
 def compute_contract_sha256(contract: Union[JobContract, Dict[str, Any]]) -> str:
@@ -28,31 +35,14 @@ def compute_contract_sha256(contract: Union[JobContract, Dict[str, Any]]) -> str
 
 def is_safe_relative_path(path_str: str) -> Tuple[bool, str]:
     """Verify that a path is strictly relative and does not escape workspace sandbox."""
-    if not path_str or not path_str.strip():
-        return False, "Path is empty"
-
-    clean_path = path_str.strip()
-
-    # Reject Windows drive letters (e.g. C:, D:)
-    if re.match(r"^[a-zA-Z]:", clean_path):
-        return False, f"Absolute drive path rejected: {path_str}"
-
-    # Reject UNC paths (e.g. \\server\share or //server/share)
-    if clean_path.startswith("\\\\") or clean_path.startswith("//"):
-        return False, f"UNC path rejected: {path_str}"
-
-    # Reject absolute root slashes (/ or \)
-    if clean_path.startswith("/") or clean_path.startswith("\\"):
-        return False, f"Root-absolute path rejected: {path_str}"
-
-    # Normalize parts to inspect for parent directory traversal
-    win_parts = PureWindowsPath(clean_path).parts
-    posix_parts = PurePosixPath(clean_path).parts
-
-    if ".." in win_parts or ".." in posix_parts:
-        return False, f"Parent traversal ('..') rejected: {path_str}"
-
-    return True, ""
+    if not isinstance(path_str, str):
+        return False, "Path must be a string"
+    try:
+        validate_relative_path(path_str, allow_glob=True)
+        return True, ""
+    except PathViolation as exc:
+        label = _VIOLATION_LABELS.get(exc.code, exc.code)
+        return False, f"{label}: {exc.detail}"
 
 
 def validate_contract(contract: Union[JobContract, Dict[str, Any]]) -> Tuple[bool, List[str]]:

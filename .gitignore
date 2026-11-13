@@ -35,6 +35,7 @@ $RECYCLE.BIN/
 
 # Session & internal planning artifacts
 *.pdf
+*_review_*.md
 implementation_plan.md
 walkthrough.md
 docs/architecture/DISCOVERY_INVENTORY_*.json

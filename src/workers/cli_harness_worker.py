@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.sandbox.manifest_hasher import build_manifest, changed_paths, diff_manifests
+from src.sandbox.path_guard import PathPolicy
+from src.sandbox.workdir_guard import validate_sandbox_dir
 from src.workers.base import (
     WorkerAdapter,
     WorkerResult,
@@ -247,6 +251,103 @@ def kill_process_tree(pid: int) -> None:
             pass
 
 
+_CMD_METACHARS = ("&", "|", ">", "<", "%", "^", "!", "(", ")", "`", "\r", "\n", '"')
+_SAFE_PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _is_cmd_wrapper(path: str | os.PathLike) -> bool:
+    return str(path).strip().lower().endswith((".cmd", ".bat"))
+
+
+def _resolve_direct_executable(harness_name: str, cfg: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Locate the direct binary (.exe) for a harness without going through a .cmd/.bat wrapper."""
+    all_configs = load_harness_config()
+    cfg = cfg or all_configs.get(harness_name) or {}
+    candidates: List[str] = []
+
+    raw_exe = os.path.expandvars(str(cfg.get("executable", "")).strip())
+    if raw_exe:
+        candidates.append(raw_exe)
+
+    if harness_name == "dsh":
+        dsh_home = os.environ.get("DSH_HOME", "").strip()
+        if dsh_home:
+            candidates.append(os.path.join(dsh_home, "DeepSeek Harness.exe"))
+        for root_env in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base = os.environ.get(root_env, "").strip()
+            if base:
+                candidates.append(os.path.join(base, "Programs", "DeepSeek Harness", "DeepSeek Harness.exe"))
+                candidates.append(os.path.join(base, "DeepSeek Harness", "DeepSeek Harness.exe"))
+        candidates.append(r"O:\DSHarness\DeepSeek Harness\DeepSeek Harness.exe")
+        which_names = ["dsh.exe", "DeepSeek Harness.exe", "dsh"]
+    elif harness_name == "opencode":
+        if os.environ.get("OPENCODE_CLI_PATH", "").strip():
+            candidates.append(os.environ["OPENCODE_CLI_PATH"].strip())
+        for root_env in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base = os.environ.get(root_env, "").strip()
+            if base:
+                candidates.append(os.path.join(base, "Programs", "ai.opencode.desktop", "resources", "opencode-cli.exe"))
+                candidates.append(os.path.join(base, "OpenCode", "opencode-cli.exe"))
+        which_names = ["opencode-cli.exe", "opencode.exe", "opencode-cli", "opencode"]
+    elif harness_name == "hermes":
+        if os.environ.get("HERMES_CLI_PATH", "").strip():
+            candidates.append(os.environ["HERMES_CLI_PATH"].strip())
+        for root_env in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base = os.environ.get(root_env, "").strip()
+            if base:
+                candidates.append(os.path.join(base, "hermes", "bin", "hermes.exe"))
+        which_names = ["hermes.exe", "hermes"]
+    elif harness_name == "antigravity":
+        if os.environ.get("AGY_CLI_PATH", "").strip():
+            candidates.append(os.environ["AGY_CLI_PATH"].strip())
+        for root_env in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base = os.environ.get(root_env, "").strip()
+            if base:
+                candidates.append(os.path.join(base, "agy", "bin", "agy.exe"))
+        which_names = ["agy.exe", "agy"]
+    else:
+        which_names = [f"{raw_exe}.exe", raw_exe] if raw_exe else [f"{harness_name}.exe", harness_name]
+
+    for cand in candidates:
+        expanded = os.path.expandvars(cand)
+        if os.path.isabs(expanded) and os.path.isfile(expanded) and not _is_cmd_wrapper(expanded):
+            return expanded
+
+    for name in which_names:
+        if not name:
+            continue
+        found = shutil.which(name)
+        if found and not _is_cmd_wrapper(found):
+            return found
+    return None
+
+
+def _validate_safe_arg(value: str, *, label: str = "arg", uses_cmd_wrapper: bool = False) -> str:
+    """Validate a subprocess argv value, blocking NUL bytes and BatBadBut cmd.exe metacharacters."""
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    if "\x00" in value:
+        raise ValueError(f"NUL byte rejected in {label}")
+    if uses_cmd_wrapper:
+        for ch in _CMD_METACHARS:
+            if ch in value:
+                raise ValueError(
+                    f"Unsafe cmd.exe metacharacter {ch!r} rejected in {label} when using .cmd/.bat wrapper"
+                )
+    return value
+
+
+def _validate_safe_goal(goal: str, uses_cmd_wrapper: bool = False) -> str:
+    """Validate goal text before passing to a subprocess, blocking BatBadBut cmd.exe metacharacters."""
+    return _validate_safe_arg(goal, label="goal", uses_cmd_wrapper=uses_cmd_wrapper)
+
+
+def _validate_safe_argv(argv: List[str], uses_cmd_wrapper: bool = False) -> None:
+    """Validate every argv element before Popen, preventing cmd.exe injection via sandbox_dir or args."""
+    for idx, item in enumerate(argv):
+        _validate_safe_arg(str(item), label=f"argv[{idx}]", uses_cmd_wrapper=uses_cmd_wrapper)
+
+
 def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     all_configs = load_harness_config()
     cfg = config or all_configs.get(harness_name)
@@ -265,13 +366,9 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
     wrapper_path = (REPO_ROOT / wrapper_rel) if wrapper_rel else None
     optional = bool(cfg.get("optional", False))
 
-    resolved_exe = None
-    if wrapper_path and wrapper_path.is_file():
+    resolved_exe = _resolve_direct_executable(harness_name, cfg)
+    if not resolved_exe and wrapper_path and wrapper_path.is_file():
         resolved_exe = str(wrapper_path)
-    elif os.path.isabs(raw_exe) and os.path.exists(raw_exe):
-        resolved_exe = raw_exe
-    else:
-        resolved_exe = shutil.which(raw_exe)
 
     if not resolved_exe:
         return {
@@ -283,13 +380,12 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
             "optional": optional,
         }
 
+    is_wrapper = _is_cmd_wrapper(resolved_exe)
+
     # Special handling for DSH
     if harness_name == "dsh":
-        # Check wrapper or execute with ELECTRON_RUN_AS_NODE=1
-        if wrapper_path and wrapper_path.is_file():
-            cmd = [str(wrapper_path), "--profile", "headless", "--help"]
-            env = os.environ.copy()
-        else:
+        # Prefer direct Electron binary with ELECTRON_RUN_AS_NODE=1 over .cmd wrapper
+        if not is_wrapper:
             cmd = [
                 resolved_exe,
                 "-e",
@@ -299,8 +395,11 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
                 "import(url.pathToFileURL(binPath).href).then(m => m.runCli())",
             ]
             env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+        else:
+            cmd = [resolved_exe, "--profile", "headless", "--help"]
+            env = os.environ.copy()
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=10)
+            res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=10, shell=False)
             if res.returncode == 0:
                 first_line = (res.stdout or res.stderr).strip().splitlines()[0] if (res.stdout or res.stderr) else "dsh headless ready"
                 return {
@@ -308,6 +407,7 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
                     "available": True,
                     "version": first_line,
                     "executable": resolved_exe,
+                    "is_cmd_wrapper": is_wrapper,
                     "error": None,
                     "optional": optional,
                 }
@@ -316,6 +416,7 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
                 "available": False,
                 "version": "",
                 "executable": resolved_exe,
+                "is_cmd_wrapper": is_wrapper,
                 "error": f"Exit code {res.returncode}: {res.stderr[:200]}",
                 "optional": optional,
             }
@@ -325,6 +426,7 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
                 "available": False,
                 "version": "",
                 "executable": resolved_exe,
+                "is_cmd_wrapper": is_wrapper,
                 "error": str(e),
                 "optional": optional,
             }
@@ -337,6 +439,7 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
             capture_output=True,
             text=True,
             timeout=10,
+            shell=False,
         )
         if res.returncode == 0:
             version_str = (res.stdout or res.stderr).strip().splitlines()[0] if (res.stdout or res.stderr) else "detected"
@@ -345,6 +448,7 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
                 "available": True,
                 "version": version_str,
                 "executable": resolved_exe,
+                "is_cmd_wrapper": is_wrapper,
                 "error": None,
                 "optional": optional,
             }
@@ -353,6 +457,7 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
             "available": False,
             "version": "",
             "executable": resolved_exe,
+            "is_cmd_wrapper": is_wrapper,
             "error": f"Probe exit code {res.returncode}: {res.stderr[:200]}",
             "optional": optional,
         }
@@ -362,6 +467,7 @@ def probe_harness(harness_name: str, config: Optional[Dict[str, Any]] = None) ->
             "available": False,
             "version": "",
             "executable": resolved_exe,
+            "is_cmd_wrapper": is_wrapper,
             "error": str(e),
             "optional": optional,
         }
@@ -397,15 +503,19 @@ class CLIHarnessWorker(WorkerAdapter):
             return True
         return False
 
-    def _snapshot_dir(self, directory: Path) -> set[Path]:
+    def _snapshot_dir(self, directory: Path) -> dict[str, str]:
         if not directory.exists():
-            return set()
-        return set(directory.rglob("*"))
+            return {}
+        return build_manifest(directory, exclude_dirs=(), exclude_suffixes=())
 
     def start(self, job_contract: Any, sandbox_dir: str, attempt_id: str, **kwargs: Any) -> WorkerResult:
         start_time = time.time()
-        sandbox = Path(sandbox_dir).resolve()
-        sandbox.mkdir(parents=True, exist_ok=True)
+        sandbox = validate_sandbox_dir(
+            sandbox_dir,
+            workspace_root=REPO_ROOT,
+            require_sandbox_subroot=True,
+            create=True,
+        )
 
         if hasattr(job_contract, "to_dict"):
             c_dict = job_contract.to_dict()
@@ -417,9 +527,18 @@ class CLIHarnessWorker(WorkerAdapter):
         harness_name = kwargs.get("harness_name") or c_dict.get("harness_name") or self.harness_name
         job_id = str(c_dict.get("job_id", kwargs.get("job_id", "cli-job-001")))
         goal = str(c_dict.get("goal", kwargs.get("prompt", "Execute task")))
-        timeout_seconds = int(c_dict.get("timeout_seconds", kwargs.get("timeout_seconds", 180)))
+        raw_timeout_val = c_dict.get("timeout_seconds")
+        if raw_timeout_val is None:
+            raw_timeout_val = kwargs.get("timeout_seconds")
+        raw_timeout = int(raw_timeout_val if raw_timeout_val is not None else 180)
+        timeout_seconds = max(1, min(3600, raw_timeout))
         requested_model = kwargs.get("model") or c_dict.get("model")
-        requested_role = str(kwargs.get("role") or c_dict.get("role") or "worker")
+
+        # Never trust caller-supplied role="reviewer" unless internal trusted adapter flag is set
+        if kwargs.get("_trusted_reviewer_adapter") is True:
+            requested_role = str(kwargs.get("role") or c_dict.get("role") or "reviewer").strip().lower() or "reviewer"
+        else:
+            requested_role = "worker"
 
         allowed, resolved_model, policy_error = validate_model_policy(
             requested_model,
@@ -461,20 +580,41 @@ class CLIHarnessWorker(WorkerAdapter):
                 metadata={"probe": probe, "model": resolved_model, "role": requested_role},
             )
 
-        resolved_exe = probe["executable"]
+        resolved_exe = str(probe["executable"])
+        uses_cmd_wrapper = bool(probe.get("is_cmd_wrapper")) or _is_cmd_wrapper(resolved_exe)
+        if harness_name == "dsh":
+            direct_dsh = _resolve_direct_executable("dsh", harness_cfg)
+            if direct_dsh:
+                resolved_exe = direct_dsh
+                uses_cmd_wrapper = False
+
+        try:
+            goal = _validate_safe_goal(goal, uses_cmd_wrapper=uses_cmd_wrapper)
+            _validate_safe_arg(str(sandbox), label="sandbox_dir", uses_cmd_wrapper=uses_cmd_wrapper)
+        except ValueError as exc:
+            duration_ms = int((time.time() - start_time) * 1000)
+            return WorkerResult(
+                job_id=job_id,
+                attempt_id=attempt_id,
+                worker_type=f"cli_{harness_name}",
+                status=STATUS_FAILED,
+                exit_code=1,
+                duration_ms=duration_ms,
+                stdout="",
+                stderr=f"Policy block: {exc}",
+                metadata={"policy_blocked": True, "model": resolved_model, "role": requested_role},
+            )
+
         env = os.environ.copy()
         env["ORCHESTRA_MODEL"] = resolved_model
+        env["ORCHESTRA_ENFORCED_MODEL"] = resolved_model
         env["ORCHESTRA_ROLE"] = requested_role
 
-        # Build command invocation
+        # Build command invocation (preferring direct .exe with shell=False over .cmd wrappers)
         if harness_name == "dsh":
-            wrapper_rel = harness_cfg.get("wrapper") if harness_cfg else None
-            wrapper_path = (REPO_ROOT / wrapper_rel) if wrapper_rel else None
-            if wrapper_path and wrapper_path.is_file():
-                cmd = [str(wrapper_path), "--profile", "headless", "--json", goal]
-            else:
+            if not uses_cmd_wrapper:
                 script = (
-                    f"const path=require('path'),url=require('url');"
+                    "const path=require('path'),url=require('url');"
                     f"process.argv=['node','dsh','--profile','headless','--json',JSON.parse({json.dumps(goal)})]; "
                     "process.pkg={}; "
                     "const binPath=path.join(path.dirname(process.execPath),'resources','app.asar','dsh','node_modules','@deepseek-ai','dsh','lib','bin.js');"
@@ -482,8 +622,12 @@ class CLIHarnessWorker(WorkerAdapter):
                 )
                 cmd = [resolved_exe, "-e", script]
                 env["ELECTRON_RUN_AS_NODE"] = "1"
+            else:
+                cmd = [resolved_exe, "--profile", "headless", "--json", goal]
         elif harness_name == "hermes":
-            profile = kwargs.get("profile") or c_dict.get("harness_profile", "default")
+            profile = str(kwargs.get("profile") or c_dict.get("harness_profile", "default")).strip()
+            if not _SAFE_PROFILE_RE.match(profile):
+                profile = "default"
             cmd = [resolved_exe, "-z", goal, "--in", str(sandbox), "--no-restore-cwd", "--safe-mode", "--profile", profile]
         elif harness_name == "opencode":
             cmd = [resolved_exe, "--prompt", goal, "--standalone", str(sandbox)]
@@ -493,10 +637,30 @@ class CLIHarnessWorker(WorkerAdapter):
             template = (harness_cfg or {}).get("run_args_template", ["--prompt", "{prompt}"])
             expanded = []
             for arg in template:
-                expanded.append(arg.format(prompt=goal, sandbox=str(sandbox)))
+                expanded.append(arg.format(prompt=goal, sandbox=str(sandbox), model=resolved_model))
             cmd = [resolved_exe, *expanded]
 
-        pre_files = self._snapshot_dir(sandbox)
+        model_flag = (harness_cfg or {}).get("model_flag")
+        if model_flag and isinstance(model_flag, str):
+            cmd.extend([model_flag, resolved_model])
+
+        try:
+            _validate_safe_argv(cmd, uses_cmd_wrapper=uses_cmd_wrapper)
+        except ValueError as exc:
+            duration_ms = int((time.time() - start_time) * 1000)
+            return WorkerResult(
+                job_id=job_id,
+                attempt_id=attempt_id,
+                worker_type=f"cli_{harness_name}",
+                status=STATUS_FAILED,
+                exit_code=1,
+                duration_ms=duration_ms,
+                stdout="",
+                stderr=f"Policy block: {exc}",
+                metadata={"policy_blocked": True, "model": resolved_model, "role": requested_role},
+            )
+
+        pre_manifest = build_manifest(sandbox, exclude_dirs=(), exclude_suffixes=())
 
         try:
             proc = subprocess.Popen(
@@ -506,6 +670,7 @@ class CLIHarnessWorker(WorkerAdapter):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
+                shell=False,
             )
             self._active_procs[attempt_id] = proc
         except Exception as e:
@@ -558,15 +723,38 @@ class CLIHarnessWorker(WorkerAdapter):
                 stderr=stderr or "Cancelled by operator.",
             )
 
-        post_files = self._snapshot_dir(sandbox)
-        changed = []
-        for p in post_files:
-            if p not in pre_files and p.is_file():
-                try:
-                    rel = p.relative_to(sandbox).as_posix()
-                    changed.append(rel)
-                except Exception:
-                    pass
+        post_manifest = build_manifest(sandbox, exclude_dirs=(), exclude_suffixes=())
+        changed = changed_paths(diff_manifests(pre_manifest, post_manifest))
+
+        awp = c_dict.get("allowed_write_paths")
+        if awp and changed:
+            policy = PathPolicy(
+                list(awp),
+                list(c_dict.get("forbidden_write_roots") or []),
+                sandbox_root=sandbox,
+            )
+            pol = policy.check_changed(changed, sandbox)
+            if not pol.ok:
+                viol_summary = ", ".join(sorted({f"{v['path']}[{v['code']}]" for v in pol.violations})[:10])
+                return WorkerResult(
+                    job_id=job_id,
+                    attempt_id=attempt_id,
+                    worker_type=f"cli_{harness_name}",
+                    status=STATUS_FAILED,
+                    changed_files=changed,
+                    stdout=stdout or "",
+                    stderr=((stderr or "") + f"\nScope violation: {viol_summary}").strip(),
+                    exit_code=1,
+                    duration_ms=duration_ms,
+                    metadata={
+                        "command": cmd,
+                        "probe": probe,
+                        "model": resolved_model,
+                        "role": requested_role,
+                        "scope_violation": True,
+                        "policy_violations": pol.violations,
+                    },
+                )
 
         status = STATUS_COMPLETED if exit_code == 0 else STATUS_FAILED
         return WorkerResult(

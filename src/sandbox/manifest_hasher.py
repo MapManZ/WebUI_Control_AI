@@ -82,11 +82,18 @@ def anchor_manifest(files: Iterable[str | os.PathLike]) -> dict[str, str]:
     return dict(sorted(out.items()))
 
 
-def fingerprint_tree(root: str | os.PathLike, *, content: bool = False) -> dict:
+def fingerprint_tree(
+    root: str | os.PathLike,
+    *,
+    content: bool = False,
+    max_content_files: int | None = None,
+) -> dict:
     """Fingerprint an external protected root.
 
     ``content=False`` hashes (relpath,size,mtime_ns) of every file (fast, catches any write);
-    ``content=True`` hashes file bytes (slow, exact).  Returns {digest, file_count, mode}.
+    ``content=True`` hashes file bytes (exact). When ``max_content_files`` is set and the
+    tree exceeds that count, automatically falls back to stat mode to avoid multi-minute
+    stalls on multi-gigabyte external trees. Returns {root, mode, file_count, digest}.
     """
     root = str(root)
     h = hashlib.sha256()
@@ -94,30 +101,66 @@ def fingerprint_tree(root: str | os.PathLike, *, content: bool = False) -> dict:
     if not os.path.exists(root):
         return {"root": root, "mode": "content" if content else "stat", "file_count": 0, "digest": "MISSING"}
     if os.path.isfile(root):
-        entries = [("", root)]
+        try:
+            st_single = os.lstat(root)
+        except OSError:
+            st_single = None
+        entries: list[tuple[str, str | None, os.stat_result | None, bool]] = [
+            ("", root, st_single, is_reparse_point(root))
+        ]
+        file_total = 1
     else:
         entries = []
+        file_total = 0
         base = root.rstrip("\\/")
-        for dp, dns, fns in os.walk(root, followlinks=False):
-            dns.sort()
-            # NOTE: no os.path.relpath here - trees may contain Windows device-named entries (e.g. "nul")
+        stack = [root]
+        while stack:
+            dp = stack.pop()
             rel_dir = dp[len(base):].lstrip("\\/").replace("\\", "/")
             prefix = (rel_dir + "/") if rel_dir else ""
-            for f in sorted(fns):
-                entries.append((prefix + f, os.path.join(dp, f)))
-            for d in dns:
-                entries.append((prefix + d + "/", None))
-    for rel, full in entries:
+            subdirs: list[tuple[str, str]] = []
+            subfiles: list[tuple[str, str, os.stat_result | None, bool]] = []
+            try:
+                with os.scandir(dp) as it:
+                    for entry in it:
+                        try:
+                            is_dir = entry.is_dir(follow_symlinks=False)
+                        except OSError:
+                            is_dir = False
+                        if is_dir:
+                            subdirs.append((entry.name, entry.path))
+                        else:
+                            try:
+                                st_e = entry.stat(follow_symlinks=False)
+                            except OSError:
+                                st_e = None
+                            try:
+                                is_sym = entry.is_symlink()
+                            except OSError:
+                                is_sym = True
+                            subfiles.append((entry.name, entry.path, st_e, is_sym))
+            except OSError:
+                continue
+            subdirs.sort(key=lambda x: x[0])
+            subfiles.sort(key=lambda x: x[0])
+            for fname, fpath, st_e, is_sym in subfiles:
+                entries.append((prefix + fname, fpath, st_e, is_sym))
+                file_total += 1
+            for dname, _dpath in subdirs:
+                entries.append((prefix + dname + "/", None, None, False))
+            for _dname, dpath in reversed(subdirs):
+                stack.append(dpath)
+
+    effective_content = bool(content) and (max_content_files is None or file_total <= max_content_files)
+    for rel, full, st, is_sym in entries:
         if full is None:
             h.update(f"D|{rel}\n".encode("utf-8", "surrogatepass"))
             continue
-        try:
-            st = os.lstat(full)
-        except OSError:
+        if st is None:
             h.update(f"E|{rel}\n".encode("utf-8", "surrogatepass"))
             continue
         n += 1
-        if content and not is_reparse_point(full):
+        if effective_content and not (is_sym or is_reparse_point(full)):
             try:
                 body = sha256_file(full)
             except OSError:
@@ -125,11 +168,16 @@ def fingerprint_tree(root: str | os.PathLike, *, content: bool = False) -> dict:
         else:
             body = f"{st.st_size}:{st.st_mtime_ns}"
         h.update(f"F|{rel}|{body}\n".encode("utf-8", "surrogatepass"))
-    return {"root": root, "mode": "content" if content else "stat", "file_count": n, "digest": h.hexdigest()}
+    return {"root": root, "mode": "content" if effective_content else "stat", "file_count": n, "digest": h.hexdigest()}
 
 
-def fingerprint_roots(roots: Iterable[str | os.PathLike], *, content: bool = False) -> dict[str, dict]:
-    return {str(r): fingerprint_tree(r, content=content) for r in roots}
+def fingerprint_roots(
+    roots: Iterable[str | os.PathLike],
+    *,
+    content: bool = False,
+    max_content_files: int | None = None,
+) -> dict[str, dict]:
+    return {str(r): fingerprint_tree(r, content=content, max_content_files=max_content_files) for r in roots}
 
 
 def verify_protected_untouched(before: dict[str, dict], after: dict[str, dict]) -> tuple[bool, list[str]]:

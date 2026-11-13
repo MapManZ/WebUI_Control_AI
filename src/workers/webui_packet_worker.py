@@ -7,11 +7,15 @@ untrusted reference encapsulation, and tamper rejection.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 from src.workers.base import (
     WorkerAdapter,
@@ -39,6 +43,17 @@ DEFAULT_TASKS = {
 }
 
 
+def load_or_create_handoff_key(key_path: Optional[Path] = None) -> bytes:
+    """Load or generate the 32-byte binary key for HMAC signing."""
+    kp = Path(key_path) if key_path else (REPO_ROOT / ".runtime" / "keys" / "handoff.key")
+    if kp.is_file():
+        return kp.read_bytes()
+    kp.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    kp.write_bytes(key)
+    return key
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -56,9 +71,16 @@ def parse_iso_utc(value: str) -> datetime:
 
 
 def compute_digest(payload: Dict[str, Any]) -> str:
-    data = {k: v for k, v in payload.items() if k != "packet_sha256"}
+    data = {k: v for k, v in payload.items() if k not in ("packet_sha256", "packet_hmac")}
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def compute_packet_hmac(payload: Dict[str, Any], key: Optional[bytes] = None) -> str:
+    key_bytes = key or load_or_create_handoff_key()
+    data = {k: v for k, v in payload.items() if k not in ("packet_sha256", "packet_hmac")}
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hmac.new(key_bytes, canonical, hashlib.sha256).hexdigest()
 
 
 def make_packet(
@@ -72,11 +94,12 @@ def make_packet(
     ttl_seconds: int = 300,
     round_num: int = 1,
     now: Optional[datetime] = None,
+    key: Optional[bytes] = None,
 ) -> Dict[str, Any]:
     if provider.lower() not in PROVIDERS:
         raise ValueError(f"Unknown provider '{provider}'. Must be one of {PROVIDERS}")
-    if not 30 <= ttl_seconds <= 3600:
-        raise ValueError("TTL must be between 30 and 3600 seconds")
+    if not 1 <= ttl_seconds <= 3600:
+        raise ValueError("TTL must be between 1 and 3600 seconds")
 
     issued = now or utc_now()
     deadline = issued + timedelta(seconds=ttl_seconds)
@@ -95,6 +118,7 @@ def make_packet(
         "task": task,
     }
     packet["packet_sha256"] = compute_digest(packet)
+    packet["packet_hmac"] = compute_packet_hmac(packet, key=key)
     return packet
 
 
@@ -128,6 +152,7 @@ def verify_and_import_response(
     packet: Dict[str, Any],
     response_dict: Any,
     received_at: Optional[datetime] = None,
+    key: Optional[bytes] = None,
 ) -> Dict[str, Any]:
     """Strictly validates a WebUI JSON response against the original work packet."""
     now = received_at or utc_now()
@@ -143,6 +168,21 @@ def verify_and_import_response(
             "valid": False,
             "status": "REJECTED_TAMPERED_PACKET",
             "issues": ["Dispatch packet SHA-256 digest is corrupted or tampered"],
+        }
+
+    packet_hmac = str(packet.get("packet_hmac") or "").strip()
+    if not packet_hmac:
+        return {
+            "valid": False,
+            "status": "REJECTED_TAMPERED_PACKET",
+            "issues": ["Dispatch packet missing mandatory HMAC signature"],
+        }
+    expected_hmac = compute_packet_hmac(packet, key=key)
+    if not hmac.compare_digest(packet_hmac, expected_hmac):
+        return {
+            "valid": False,
+            "status": "REJECTED_TAMPERED_PACKET",
+            "issues": ["Dispatch packet HMAC signature is invalid or tampered"],
         }
 
     # 2. Response type check
@@ -317,3 +357,6 @@ class WebUIPacketWorker(WorkerAdapter):
                 "fallback": "dashboard_copy_paste",
             },
         )
+
+
+ingest_response = verify_and_import_response

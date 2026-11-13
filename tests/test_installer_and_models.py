@@ -106,11 +106,21 @@ class TestModelTierAndArgonPolicy(unittest.TestCase):
                 self.assertEqual(res_h.status, STATUS_COMPLETED)
                 self.assertEqual(res_h.metadata.get("model"), "gemini-4-hydrogen")
 
+                # Untrusted contract role="reviewer" cannot bypass worker role enforcement (Finding 3.9)
+                res_untrusted = worker.start(
+                    {"job_id": "job-argon-untrusted", "goal": "Review diff", "role": "reviewer"},
+                    tmp,
+                    "att-r-untrusted",
+                    model="gemini-4-argon",
+                )
+                self.assertEqual(res_untrusted.status, "BLOCKED_TOOL_UNAVAILABLE")
+
                 res_r = worker.start(
                     {"job_id": "job-argon-review", "goal": "Review diff", "role": "reviewer"},
                     tmp,
                     "att-r",
                     model="gemini-4-argon",
+                    _trusted_reviewer_adapter=True,
                 )
                 self.assertEqual(res_r.status, STATUS_COMPLETED)
                 self.assertEqual(res_r.metadata.get("model"), "gemini-4-argon")

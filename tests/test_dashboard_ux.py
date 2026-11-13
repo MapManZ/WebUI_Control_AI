@@ -93,7 +93,9 @@ class TestWorkdirAndSettingsDB(unittest.TestCase):
     ) -> tuple[int, dict]:
         url = self.base_url + path
         req_headers = dict(headers or {})
-        if data is not None:
+        if method.upper() in ("POST", "DELETE", "PUT", "PATCH") and "X-Orchestra-CSRF" not in req_headers:
+            req_headers["X-Orchestra-CSRF"] = getattr(self.server, "csrf_token", "")
+        if data is not None and "Content-Type" not in req_headers:
             req_headers["Content-Type"] = "application/json"
         body = json.dumps(data).encode("utf-8") if data is not None else None
         req = urllib.request.Request(url, headers=req_headers, data=body, method=method)
@@ -170,10 +172,32 @@ class TestWorkdirAndSettingsDB(unittest.TestCase):
                 "notes": "Approved by reviewer",
             },
         }
-        st, saved = self._request(
+        # Unauthenticated attempt with X-Orchestra-Role: reviewer without valid token is rejected with 403
+        st_unauth, err_unauth = self._request(
             "/api/settings",
             method="POST",
             headers={"X-Orchestra-Role": "reviewer"},
+            data=payload,
+        )
+        self.assertEqual(st_unauth, 403)
+        self.assertIn("reviewer", err_unauth["error"].lower())
+
+        # Unauthenticated attempt via JSON body role='reviewer' alone is rejected with 403
+        st_body, err_body = self._request(
+            "/api/settings",
+            method="POST",
+            data={**payload, "role": "reviewer"},
+        )
+        self.assertEqual(st_body, 403)
+
+        # Reviewer with valid X-Orchestra-Reviewer-Token CAN update working_directory, external_mcp_servers, and model_policy_overrides
+        st, saved = self._request(
+            "/api/settings",
+            method="POST",
+            headers={
+                "X-Orchestra-Role": "reviewer",
+                "X-Orchestra-Reviewer-Token": self.server.reviewer_token,
+            },
             data=payload,
         )
         self.assertEqual(st, 200, f"Settings save failed: {saved}")
@@ -226,11 +250,21 @@ class TestLnwjudAndExternalMCPIntegration(unittest.TestCase):
         self.server.shutdown()
         self.temp_dir.cleanup()
 
-    def _request(self, path: str, method: str = "GET", data: dict | None = None) -> tuple[int, dict]:
+    def _request(
+        self,
+        path: str,
+        method: str = "GET",
+        data: dict | None = None,
+        headers: dict | None = None,
+    ) -> tuple[int, dict]:
         url = self.base_url + path
-        headers = {"Content-Type": "application/json"} if data is not None else {}
+        req_headers = dict(headers or {})
+        if method.upper() in ("POST", "DELETE", "PUT", "PATCH") and "X-Orchestra-CSRF" not in req_headers:
+            req_headers["X-Orchestra-CSRF"] = getattr(self.server, "csrf_token", "")
+        if data is not None and "Content-Type" not in req_headers:
+            req_headers["Content-Type"] = "application/json"
         body = json.dumps(data).encode("utf-8") if data is not None else None
-        req = urllib.request.Request(url, headers=headers, data=body, method=method)
+        req = urllib.request.Request(url, headers=req_headers, data=body, method=method)
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.loads(r.read().decode("utf-8"))
@@ -281,6 +315,53 @@ class TestLnwjudAndExternalMCPIntegration(unittest.TestCase):
         )
         self.assertEqual(st_bad, 400)
         self.assertIn("9121", err_bad["error"])
+
+        # Arbitrary unregistered command probe must be blocked with 403
+        st_arb, err_arb = self._request(
+            "/api/mcp/external/probe",
+            method="POST",
+            data={"command": "whoami", "live_handshake": True},
+        )
+        self.assertEqual(st_arb, 403)
+        self.assertIn("Forbidden", err_arb.get("error", ""))
+
+        # Missing or invalid CSRF token must return 403
+        st_csrf, err_csrf = self._request(
+            "/api/mcp/external/probe",
+            method="POST",
+            headers={"X-Orchestra-CSRF": "invalid-token"},
+            data={"name": "lnwjud"},
+        )
+        self.assertEqual(st_csrf, 403)
+        self.assertIn("CSRF", err_csrf.get("error", ""))
+
+        # Invalid Content-Type (text/plain) on POST must return 415
+        url = self.base_url + "/api/mcp/external/probe"
+        req = urllib.request.Request(
+            url,
+            headers={"Content-Type": "text/plain", "X-Orchestra-CSRF": getattr(self.server, "csrf_token", "")},
+            data=b'{"name": "lnwjud"}',
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                resp_code = r.status
+        except urllib.error.HTTPError as exc:
+            resp_code = exc.code
+        self.assertEqual(resp_code, 415)
+
+        # Invalid Host header must return 403
+        req_bad_host = urllib.request.Request(
+            self.base_url + "/api/workdir",
+            headers={"Host": "attacker.com"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req_bad_host, timeout=5) as r:
+                host_resp_code = r.status
+        except urllib.error.HTTPError as exc:
+            host_resp_code = exc.code
+        self.assertEqual(host_resp_code, 403)
 
     def test_proxy_mcp_live_stdio_bridge(self) -> None:
         # Create a small local stdio MCP mock server script inside temp_dir

@@ -363,8 +363,10 @@ function parseArgsString(raw) {
   const trimmed = (raw || "").trim();
   if (!trimmed) return [];
   if (trimmed.startsWith("[")) {
-    const arr = JSON.parse(trimmed);
-    if (Array.isArray(arr)) return arr.map(String);
+    try {
+      const arr = JSON.parse(trimmed);
+      if (Array.isArray(arr)) return arr.map(String);
+    } catch (_) {}
   }
   return trimmed.split(/\s+/).filter(Boolean);
 }
@@ -611,9 +613,9 @@ document.addEventListener("DOMContentLoaded", () => {
     lnwjudBtn.addEventListener("click", () => {
       document.getElementById("mcp-server-name").value = "lnwjud";
       document.getElementById("mcp-server-command").value = "npx";
-      document.getElementById("mcp-server-args").value = "-y @engasnm111/lnwjud";
-      document.getElementById("mcp-server-desc").value = "Lnwjud External MCP Server (@engasnm111/lnwjud)";
-      document.getElementById("mcp-server-enabled").value = "true";
+      document.getElementById("mcp-server-args").value = "--no-install @engasnm111/lnwjud@1.0.0";
+      document.getElementById("mcp-server-desc").value = "Lnwjud External MCP Server (@engasnm111/lnwjud@1.0.0)";
+      document.getElementById("mcp-server-enabled").value = "false";
       showToast("Loaded Lnwjud preset! Click 'Save MCP Server' to register.");
     });
   }

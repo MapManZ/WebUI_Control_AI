@@ -149,12 +149,18 @@ class QAReport:
         return cls(**d)
 
 
-def _first_token_name(cmd: str) -> str:
+def _first_token_raw(cmd: str) -> str:
     try:
-        tok = shlex.split(cmd, posix=False)[0]
+        return shlex.split(cmd, posix=False)[0].strip('"')
     except (ValueError, IndexError):
         return ""
-    name = os.path.basename(tok.strip('"')).lower()
+
+
+def _first_token_name(cmd: str) -> str:
+    tok = _first_token_raw(cmd)
+    if not tok:
+        return ""
+    name = os.path.basename(tok).lower()
     for ext in (".exe", ".cmd", ".bat"):
         if name.endswith(ext):
             name = name[: -len(ext)]
@@ -162,15 +168,36 @@ def _first_token_name(cmd: str) -> str:
 
 
 def command_allowed(command: str, allowed_commands: list) -> bool:
-    """If the contract lists allowed_commands, the command must start with one of them."""
+    """Contract must explicitly list allowed_commands; empty allowlist rejects all commands."""
     if not allowed_commands:
-        return True
+        return False
     cmd_norm = " ".join(command.split()).lower()
+    raw_first = _first_token_raw(command)
+    has_path_sep = ("/" in raw_first) or ("\\" in raw_first)
     first = _first_token_name(command)
+    if not first:
+        return False
+
+    sys_py_real = os.path.normcase(os.path.realpath(os.path.abspath(sys.executable)))
+    raw_first_real = os.path.normcase(os.path.realpath(os.path.abspath(raw_first))) if has_path_sep else ""
+
     for a in allowed_commands:
         a_str = a if isinstance(a, str) else (a.get("command") or "")
         a_norm = " ".join(a_str.split()).lower()
         if not a_norm:
+            continue
+        a_raw_first = _first_token_raw(a_str)
+        a_has_sep = ("/" in a_raw_first) or ("\\" in a_raw_first)
+        if has_path_sep:
+            if a_has_sep:
+                a_real = os.path.normcase(os.path.realpath(os.path.abspath(a_raw_first)))
+                if raw_first_real != a_real:
+                    continue
+                if cmd_norm == a_norm or cmd_norm.startswith(a_norm + " ") or " " not in a_norm:
+                    return True
+            else:
+                if " " not in a_norm and _first_token_name(a_str) == "python" and raw_first_real == sys_py_real:
+                    return True
             continue
         if cmd_norm == a_norm or cmd_norm.startswith(a_norm + " "):
             return True

@@ -31,6 +31,11 @@ class PathViolation(Exception):
         self.detail = detail
 
 
+class ForbiddenPathError(PathViolation):
+    def __init__(self, detail: str, code: str = "PROTECTED_ROOT"):
+        super().__init__(code, detail)
+
+
 def _fold(s: str) -> str:
     return unicodedata.normalize("NFC", s).casefold()
 
@@ -188,7 +193,11 @@ class PathPolicy:
     """allowed_write_paths / forbidden_write_roots evaluation (forbidden always wins)."""
 
     def __init__(self, allowed_write_paths: list[str], forbidden_write_roots: list[str] | None = None,
-                 protected_roots: list[str] | None = None):
+                 protected_roots: list[str] | None = None,
+                 sandbox_root: str | os.PathLike | None = None,
+                 workspace_root: str | os.PathLike | list[str | os.PathLike] | None = None):
+        from src.sandbox.workdir_guard import get_protected_roots
+
         self.allowed: list[str] = []
         for a in allowed_write_paths or []:
             try:
@@ -196,15 +205,43 @@ class PathPolicy:
             except PathViolation as exc:
                 raise PathViolation("BAD_ALLOWLIST_ENTRY", f"{a!r}: {exc.code}") from exc
             self.allowed.append(a)
+
+        ws_roots: list[str] = []
+        if workspace_root is not None:
+            raw_ws = workspace_root if isinstance(workspace_root, (list, tuple, set)) else [workspace_root]
+            for wr in raw_ws:
+                if wr is not None and str(wr).strip():
+                    ws_roots.append(os.path.realpath(os.path.abspath(str(wr))))
+
         self.forbidden_rel: list[str] = []
         self.forbidden_abs: list[str] = []
         for f in (forbidden_write_roots or []):
             if _DRIVE_RE.match(f) or f.startswith("\\\\") or os.path.isabs(f):
-                self.forbidden_abs.append(os.path.abspath(f))
+                abs_f = os.path.abspath(f)
+                self.forbidden_abs.append(abs_f)
+                real_f = os.path.realpath(abs_f)
+                for real_ws in ws_roots:
+                    if is_within(real_f, real_ws):
+                        rel_sub = os.path.relpath(real_f, real_ws).replace("\\", "/")
+                        if rel_sub not in ("", ".") and not rel_sub.startswith(".."):
+                            if rel_sub not in self.forbidden_rel:
+                                self.forbidden_rel.append(rel_sub)
             else:
                 self.forbidden_rel.append(f)
-        for p in protected_roots or []:
-            self.forbidden_abs.append(os.path.abspath(p))
+        for p in list(get_protected_roots()) + list(protected_roots or []):
+            abs_p = os.path.abspath(p)
+            if abs_p not in self.forbidden_abs:
+                self.forbidden_abs.append(abs_p)
+
+        self.sandbox_root: str | None = None
+        if sandbox_root is not None:
+            abs_sb = os.path.abspath(str(sandbox_root))
+            real_sb = os.path.realpath(abs_sb)
+            for fa in self.forbidden_abs:
+                real_fa = os.path.realpath(fa)
+                if is_within(abs_sb, fa) or is_within(real_sb, fa) or is_within(real_sb, real_fa):
+                    raise ForbiddenPathError(f"Sandbox root {sandbox_root} is inside forbidden/protected root: {fa}")
+            self.sandbox_root = real_sb
 
     def check_path(self, rel: str, sandbox_root: str | os.PathLike | None = None) -> list[dict]:
         v: list[dict] = []
@@ -214,11 +251,13 @@ class PathPolicy:
             return [{"path": rel, "code": exc.code, "detail": exc.detail}]
         if self.forbidden_rel and matches_any(norm, self.forbidden_rel):
             v.append({"path": rel, "code": "FORBIDDEN_ROOT", "detail": "matches forbidden_write_roots"})
-        if sandbox_root is not None:
+        sb = sandbox_root if sandbox_root is not None else self.sandbox_root
+        if sb is not None:
             try:
-                resolved = resolve_in_root(sandbox_root, norm)
+                resolved = resolve_in_root(sb, norm)
                 for fa in self.forbidden_abs:
-                    if is_within(resolved, fa):
+                    real_fa = os.path.realpath(fa)
+                    if is_within(resolved, fa) or is_within(resolved, real_fa):
                         v.append({"path": rel, "code": "PROTECTED_ROOT", "detail": fa})
             except PathViolation as exc:
                 v.append({"path": rel, "code": exc.code, "detail": exc.detail})

@@ -140,11 +140,12 @@ def _run_wrapper_version(wrapper_path: Path) -> Dict[str, Any]:
             "error": f"Wrapper not found: {wrapper_path}",
         }
     try:
+        cmd = ["cmd.exe", "/d", "/s", "/c", str(wrapper_path), "--version"]
         res = subprocess.run(
-            f'cmd /c "{wrapper_path}" --version',
+            cmd,
             capture_output=True,
             text=True,
-            shell=True,
+            shell=False,
             timeout=15,
         )
         output = (res.stdout or res.stderr or "").strip()

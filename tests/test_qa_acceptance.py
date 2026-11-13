@@ -97,7 +97,7 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(command_allowed("python3 -m x", ["python"]))
         self.assertFalse(command_allowed("cmd /c echo hi", ["python"]))
         self.assertFalse(command_allowed("powershell -c x", ["python", "git"]))
-        self.assertTrue(command_allowed("anything", []))
+        self.assertFalse(command_allowed("anything", []))
         rep = self._run(["cmd /c echo hi"], allowed_commands=["python"])
         self.assertEqual(rep.checks[0].status, "POLICY_BLOCKED")
         self.assertTrue(rep.security_violation)

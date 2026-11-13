@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,9 +21,16 @@ if str(REPO_ROOT) not in sys.path:
 
 import uuid
 
+from src.orchestra.supervisor import Supervisor
+from src.sandbox.path_guard import PathPolicy, is_reparse_point
+from src.sandbox.workdir_guard import get_protected_roots, validate_sandbox_dir
 from src.workers.base import (
+    STATUS_AWAITING_WEBUI_PACKET,
+    STATUS_BLOCKED_TOOL_UNAVAILABLE,
+    STATUS_CANCELLED,
     STATUS_COMPLETED,
     STATUS_FAILED,
+    STATUS_TIMEOUT,
     WorkerResult,
 )
 from src.workers.cli_harness_worker import (
@@ -48,6 +58,15 @@ from src.webui.dashboard_server import HubStore
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_HUB_STORE = REPO_ROOT / ".runtime" / "webui_hub"
+_SAFE_JOB_ID_RE = re.compile(r"^[0-9a-zA-Z_-]{1,64}$")
+
+
+def _validate_job_id(raw_job_id: Any) -> str:
+    """Validate an MCP job_id against strict path-safe identifier rules."""
+    job_id = str(raw_job_id) if raw_job_id is not None else ""
+    if not _SAFE_JOB_ID_RE.fullmatch(job_id) or ".." in job_id:
+        raise ValueError(f"Invalid job_id (must match ^[0-9a-zA-Z_-]{{1,64}}$): {job_id!r}")
+    return job_id
 
 MCP_TOOLS = [
     {
@@ -288,7 +307,11 @@ class OrchestraMCPServer:
             }
 
         if name == "orchestra_list_jobs":
-            limit = int(args.get("limit", 20))
+            try:
+                limit = int(args.get("limit", 20))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("limit must be an integer") from exc
+            limit = max(1, min(200, limit))
             hub_jobs = self.hub_store.list_jobs(limit=limit)
             # Optional SQLite inspect if exists
             db_jobs = []
@@ -308,7 +331,11 @@ class OrchestraMCPServer:
             }
 
         if name == "orchestra_create_webui_packet":
-            job_id = args.get("job_id") or uuid.uuid4().hex
+            raw_job_id = args.get("job_id")
+            if raw_job_id is not None:
+                job_id = _validate_job_id(raw_job_id)
+            else:
+                job_id = uuid.uuid4().hex
             case_id = args["case_id"]
             provider = args["provider"].lower()
             context_id = args.get("context_id", "B")
@@ -351,7 +378,7 @@ class OrchestraMCPServer:
             }
 
         if name == "orchestra_submit_webui_response":
-            job_id = args["job_id"]
+            job_id = _validate_job_id(args.get("job_id"))
             resp = args["response"]
             result = self.hub_store.submit_reply(job_id, resp)
             return {
@@ -366,21 +393,64 @@ class OrchestraMCPServer:
             return probe_harness(harness)
 
         if name == "orchestra_run_job":
-            wtype = args["worker_type"].lower()
-            goal = args["goal"]
-            job_id = args.get("job_id", f"job-{uuid.uuid4().hex[:8]}")
-            sandbox_dir = args.get("sandbox_dir") or str(REPO_ROOT / ".runtime" / "sandboxes" / job_id)
-            timeout = int(args.get("timeout_seconds", 120))
+            wtype = str(args["worker_type"]).strip().lower()
+            goal = str(args["goal"])
+            raw_job_id = args.get("job_id")
+            if raw_job_id is None:
+                job_id = f"job-{uuid.uuid4().hex[:8]}"
+            else:
+                job_id = _validate_job_id(raw_job_id)
+
+            raw_sandbox = args.get("sandbox_dir")
+            if raw_sandbox is None or not str(raw_sandbox).strip():
+                candidate_sandbox = str(REPO_ROOT / ".runtime" / "sandboxes" / job_id)
+            else:
+                candidate_sandbox = str(raw_sandbox)
+            sandbox_path = validate_sandbox_dir(
+                candidate_sandbox,
+                workspace_root=REPO_ROOT,
+                require_sandbox_subroot=True,
+                create=True,
+            )
+            if sandbox_path.resolve() == Path(tempfile.gettempdir()).resolve():
+                raise ValueError("sandbox_dir cannot be the system temp root itself")
+
+            raw_timeout = int(args["timeout_seconds"] if args.get("timeout_seconds") is not None else 120)
+            timeout = max(1, min(3600, raw_timeout))
+
+            allowed_write_paths = list(args.get("allowed_write_paths") or ["solution.txt", "result.txt", "output.txt"])
+            forbidden_write_roots = list(args.get("forbidden_write_roots") or [])
+            # Do not allow untrusted MCP callers to override QA allowlist or inject arbitrary shell checks.
+            allowed_commands = ["python"]
+            acceptance_checks = ['python -c "import sys; sys.exit(0)"']
+
+            PathPolicy(
+                allowed_write_paths,
+                forbidden_write_roots,
+                protected_roots=get_protected_roots(),
+                sandbox_root=sandbox_path,
+                workspace_root=REPO_ROOT,
+            )
 
             contract = {
+                "schema_version": "1.0.0",
+                "plan_id": "MCP-RUN",
+                "phase_id": "MCP",
                 "job_id": job_id,
+                "batch_id": str(args.get("batch_id") or f"mcp-{job_id}"),
+                "batch_ordinal": int(args.get("batch_ordinal", 1)),
+                "project_id": str(args.get("project_id") or "mcp-workspace"),
+                "workspace_root_ref": ".",
                 "goal": goal,
+                "allowed_read_paths": list(args.get("allowed_read_paths") or ["**"]),
+                "allowed_write_paths": allowed_write_paths,
+                "forbidden_write_roots": forbidden_write_roots,
+                "allowed_commands": allowed_commands,
+                "dependencies": list(args.get("dependencies") or []),
+                "acceptance_checks": acceptance_checks,
                 "timeout_seconds": timeout,
                 "mock_behavior": args.get("mock_behavior", "pass"),
-                "allowed_write_paths": ["solution.txt", "result.txt", "output.txt"],
             }
-
-            attempt_id = f"{job_id}-att-1"
 
             if wtype == "mock":
                 worker = MockWorker(mode=args.get("mock_behavior"))
@@ -393,8 +463,114 @@ class OrchestraMCPServer:
             else:
                 raise ValueError(f"Unknown worker_type: {wtype}")
 
-            res = worker.start(contract, sandbox_dir, attempt_id)
-            return res.to_dict()
+            if self.hub_store.dir.resolve() != DEFAULT_HUB_STORE.resolve():
+                sup_runtime = self.hub_store.dir / "mcp_supervisor"
+            else:
+                sup_runtime = REPO_ROOT / ".runtime"
+
+            sup = Supervisor(REPO_ROOT, runtime_root=sup_runtime)
+            try:
+                errs = sup.validate_contract(contract)
+                if errs:
+                    raise ValueError("; ".join(errs))
+                sup.submit_contract(
+                    contract,
+                    canonical_root=str(REPO_ROOT),
+                    protected_paths=get_protected_roots(),
+                )
+                sup.approve_contract(job_id, "mcp-orchestrator")
+                sup.check_batch_gate(job_id)
+
+                has_staged = any(sandbox_path.iterdir())
+                outcome = sup.run_job_attempt(
+                    job_id,
+                    worker,
+                    source_root=str(sandbox_path) if has_staged else None,
+                )
+
+                wr_data: Dict[str, Any] = {}
+                att_row = sup.db.get_attempt(outcome.attempt_id) if outcome.attempt_id else None
+                if att_row:
+                    ev_file = sup.runtime_root / "evidence" / job_id / f"attempt-{att_row['attempt_num']}" / "worker_result.json"
+                    if ev_file.is_file():
+                        try:
+                            wr_data = json.loads(ev_file.read_text(encoding="utf-8"))
+                        except Exception:
+                            wr_data = {}
+
+                    if outcome.accepted and att_row["sandbox_path"]:
+                        att_sb = Path(att_row["sandbox_path"])
+                        real_att_sb = Path(os.path.realpath(att_sb))
+                        real_sb_dst = Path(os.path.realpath(sandbox_path))
+                        if str(real_att_sb) != str(real_sb_dst):
+                            if att_sb.is_symlink() or is_reparse_point(att_sb) or sandbox_path.is_symlink() or is_reparse_point(sandbox_path):
+                                raise ValueError("Symlink/junction detected on sandbox root during writeback")
+                            wb_policy = PathPolicy(
+                                allowed_write_paths,
+                                forbidden_write_roots,
+                                protected_roots=get_protected_roots(),
+                                sandbox_root=sandbox_path,
+                                workspace_root=REPO_ROOT,
+                            )
+                            for rel in outcome.changed_files:
+                                if wb_policy.check_path(rel, sandbox_path):
+                                    raise ValueError(f"Writeback blocked by PathPolicy for {rel!r}")
+                                src_f = att_sb / rel
+                                dst_f = sandbox_path / rel
+                                if src_f.is_symlink() or is_reparse_point(src_f):
+                                    raise ValueError(f"Refusing symlink/reparse writeback source: {rel!r}")
+                                if dst_f.exists() and (dst_f.is_symlink() or is_reparse_point(dst_f)):
+                                    raise ValueError(f"Refusing symlink/reparse writeback destination: {rel!r}")
+                                cur_dir = sandbox_path
+                                for part in Path(rel).parent.parts:
+                                    if part in ("", "."):
+                                        continue
+                                    cur_dir = cur_dir / part
+                                    if os.path.lexists(cur_dir) and (cur_dir.is_symlink() or is_reparse_point(cur_dir)):
+                                        raise ValueError(f"Symlink/reparse ancestor blocked during writeback: {cur_dir}")
+                                if not Path(os.path.realpath(src_f)).is_relative_to(real_att_sb):
+                                    raise ValueError(f"Writeback source escapes attempt sandbox: {rel!r}")
+                                if not Path(os.path.realpath(dst_f)).is_relative_to(real_sb_dst):
+                                    raise ValueError(f"Writeback destination escapes sandbox_dir: {rel!r}")
+                                if src_f.is_file():
+                                    dst_f.parent.mkdir(parents=True, exist_ok=True)
+                                    shutil.copy2(src_f, dst_f)
+
+                raw_wstatus = wr_data.get("status")
+                raw_exit = wr_data.get("exit_code")
+                if outcome.accepted:
+                    final_status = STATUS_COMPLETED
+                    final_exit = 0
+                elif raw_wstatus in (
+                    STATUS_TIMEOUT,
+                    STATUS_CANCELLED,
+                    STATUS_BLOCKED_TOOL_UNAVAILABLE,
+                    STATUS_AWAITING_WEBUI_PACKET,
+                ):
+                    final_status = str(raw_wstatus)
+                    final_exit = int(raw_exit) if raw_exit is not None else 1
+                else:
+                    final_status = STATUS_FAILED
+                    final_exit = int(raw_exit) if raw_exit not in (None, 0) else 1
+
+                return {
+                    "job_id": job_id,
+                    "attempt_id": outcome.attempt_id,
+                    "worker_type": wtype,
+                    "status": final_status,
+                    "exit_code": final_exit,
+                    "changed_files": outcome.changed_files,
+                    "stdout": wr_data.get("stdout", ""),
+                    "stderr": wr_data.get("stderr", "") or ("; ".join(outcome.reasons) if not outcome.accepted else ""),
+                    "final_state": outcome.final_state,
+                    "gate_verdict": outcome.gate_verdict,
+                    "accepted": outcome.accepted,
+                    "reasons": outcome.reasons,
+                    "failure_class": outcome.failure_class,
+                    "governed_by": "Supervisor",
+                }
+            finally:
+                sup.close()
 
         if name == "orchestra_get_workdir":
             return {"ok": True, **self.hub_store.settings.get_workdir()}

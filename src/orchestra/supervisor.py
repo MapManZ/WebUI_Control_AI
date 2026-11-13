@@ -11,10 +11,12 @@ import os
 import re
 import secrets
 import threading
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from src.contracts.validator import validate_backlog_dag
 from src.handoff import generator as handoff_gen
 from src.handoff import verifier as handoff_ver
 from src.qa.gate import AcceptanceGate, evidence_sha256
@@ -24,6 +26,7 @@ from src.sandbox.manifest_hasher import (
     build_manifest, changed_paths, diff_manifests, fingerprint_roots, manifest_digest, verify_protected_untouched,
 )
 from src.sandbox.path_guard import PathPolicy, PathViolation, scan_links, validate_relative_path
+from src.sandbox.workdir_guard import get_protected_roots
 from src.sandbox.worktree_manager import SandboxError, WorktreeManager
 from src.state import fsm
 from src.state.db import StateDB, canonical_json, contract_digest, utc_now
@@ -36,6 +39,21 @@ from .repair import (
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
 MAX_JOBS_PER_BATCH = 2
+
+
+def _merge_protected_roots(protected_paths: list[str] | None = None) -> list[str]:
+    """Merge dynamic global protected roots with project-specific protected paths."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for p in list(get_protected_roots()) + list(protected_paths or []):
+        if not p or not str(p).strip():
+            continue
+        abs_p = os.path.abspath(str(p).strip())
+        key = os.path.normcase(abs_p)
+        if key not in seen:
+            seen.add(key)
+            merged.append(abs_p)
+    return merged
 
 
 class ContractRejected(Exception):
@@ -82,7 +100,7 @@ class Supervisor:
         qa_runner: QARunner | None = None,
         role_d: RoleDAdapter | None = None,
         lease_ttl_seconds: float = 900.0,
-        protected_fingerprint_content: bool = False,
+        protected_fingerprint_content: bool = True,
     ):
         self.repo_root = Path(os.path.abspath(str(repo_root)))
         self.runtime_root = Path(os.path.abspath(str(runtime_root or self.repo_root / ".runtime")))
@@ -145,6 +163,18 @@ class Supervisor:
                     validate_relative_path(str(p), allow_glob=True)
                 except PathViolation as exc:
                     errs.append(f"allowed_write_paths entry {p!r} rejected: {exc.code}")
+        arp = c.get("allowed_read_paths")
+        if arp is not None:
+            if not isinstance(arp, list):
+                errs.append("allowed_read_paths must be a list")
+            else:
+                for p in arp:
+                    try:
+                        validate_relative_path(str(p), allow_glob=True)
+                    except PathViolation as exc:
+                        errs.append(f"allowed_read_paths entry {p!r} rejected: {exc.code}")
+        if "allowed_commands" in c and c["allowed_commands"] is not None and not isinstance(c["allowed_commands"], list):
+            errs.append("allowed_commands must be a list")
         try:
             if int(c.get("batch_ordinal", 1)) < 1:
                 errs.append("batch_ordinal must be >= 1")
@@ -173,6 +203,8 @@ class Supervisor:
                 pass
             if claimed not in accepted:
                 raise ContractRejected(f"contract_sha256 mismatch for {c['job_id']}")
+        elif "allowed_commands" not in c:
+            c["allowed_commands"] = ["python"]
         batch = str(c["batch_id"])
         with self.db.transaction():
             n = self.db.query_one("SELECT COUNT(*) AS n FROM job_contracts WHERE batch_id=?", (batch,))["n"]
@@ -182,8 +214,22 @@ class Supervisor:
                                     (batch, int(c.get("batch_ordinal", 1))))
             if dup:
                 raise BatchGateError(f"G7: batch {batch} ordinal {c.get('batch_ordinal', 1)} already used by {dup['job_id']}")
+            existing_rows = self.db.query("SELECT contract_json, depends_on_json FROM job_contracts")
+            dag_contracts: list[dict] = []
+            for row in existing_rows:
+                item = json.loads(row["contract_json"])
+                if "dependencies" not in item:
+                    item["dependencies"] = json.loads(row["depends_on_json"])
+                dag_contracts.append(item)
+            c_dag = dict(c)
+            c_dag.setdefault("dependencies", list(c.get("dependencies") or c.get("depends_on") or []))
+            dag_contracts.append(c_dag)
+            ok_dag, dag_errors = validate_backlog_dag(dag_contracts)
+            if not ok_dag:
+                raise ContractRejected("; ".join(dag_errors))
+            merged_protected = _merge_protected_roots(protected_paths)
             self.db.register_project(c["project_id"], project_name or c["project_id"],
-                                     canonical_root or str(self.repo_root), protected_paths or [], serena_policy)
+                                     canonical_root or str(self.repo_root), merged_protected, serena_policy)
             sha = self.fsm.create_job(c)
         return {"job_id": c["job_id"], "contract_sha256": sha, "state": fsm.DRAFT}
 
@@ -254,7 +300,8 @@ class Supervisor:
                                              lease_generation=gen)
         num = self.db.get_attempt(attempt_id)["attempt_num"]
         project = self.db.get_project(crow["project_id"])
-        protected = json.loads(project["protected_paths_json"])
+        protected = _merge_protected_roots(json.loads(project["protected_paths_json"]))
+        ws_roots = [p for p in (project["canonical_root"], str(self.repo_root), source_root) if p]
         evidence_dir = self.runtime_root / "evidence" / job_id / f"attempt-{num}"
         evidence_dir.mkdir(parents=True, exist_ok=True)
         st: dict[str, Any] = {"job_id": job_id, "attempt_id": attempt_id, "tok": tok, "gen": gen, "contract": contract}
@@ -263,16 +310,46 @@ class Supervisor:
         problems: list[str] = []
         sandbox = None
         pre_manifest: dict[str, str] = {}
+        pre_scope_manifest: dict[str, str] = {}
         policy = None
         try:
             if contract_digest(contract) != crow["contract_sha256"] or crow["approval_state"] != "APPROVED":
                 problems.append("contract SHA-256 / approval mismatch")
-            policy = PathPolicy(contract.get("allowed_write_paths") or [], contract.get("forbidden_write_roots") or [])
-            sandbox = self.worktrees.create_attempt(job_id, num, source_root=source_root, include=include)
+            effective_source_root = source_root
+            effective_include = include
+            if effective_include is None:
+                arp = contract.get("allowed_read_paths")
+                if isinstance(arp, list):
+                    if arp:
+                        for p in arp:
+                            validate_relative_path(str(p), allow_glob=True)
+                        effective_include = [str(p) for p in arp]
+                    elif "allowed_read_paths" in contract:
+                        effective_source_root = None
+            policy = PathPolicy(
+                contract.get("allowed_write_paths") or [],
+                contract.get("forbidden_write_roots") or [],
+                protected_roots=protected,
+                workspace_root=ws_roots,
+            )
+            sandbox = self.worktrees.create_attempt(
+                job_id,
+                num,
+                source_root=effective_source_root,
+                include=effective_include,
+            )
+            policy = PathPolicy(
+                contract.get("allowed_write_paths") or [],
+                contract.get("forbidden_write_roots") or [],
+                protected_roots=protected,
+                sandbox_root=sandbox.path,
+                workspace_root=ws_roots,
+            )
             links = scan_links(sandbox.path)
             if links:
                 problems.append(f"links present in sandbox: {[x['path'] for x in links][:5]}")
-            pre_manifest = build_manifest(sandbox.path)
+            pre_manifest = build_manifest(sandbox.path, exclude_dirs=())
+            pre_scope_manifest = build_manifest(sandbox.path, exclude_dirs=(), exclude_suffixes=())
         except (SandboxError, PathViolation, OSError) as exc:
             problems.append(f"{type(exc).__name__}: {exc}")
         if problems or sandbox is None:
@@ -281,7 +358,7 @@ class Supervisor:
             self.fsm.transition(job_id, fsm.PREFLIGHT_FAILED, lease_token=tok, lease_generation=gen,
                                 attempt_id=attempt_id, payload={"problems": problems}, actor="preflight")
             return AttemptOutcome(job_id, attempt_id, fsm.PREFLIGHT_FAILED, reasons=problems)
-        prot_before = fingerprint_roots(protected, content=self.protected_content)
+        prot_before = fingerprint_roots(protected, content=self.protected_content, max_content_files=2000)
         self.fsm.update_attempt(attempt_id, sandbox_path=sandbox.path,
                                 pre_manifest_sha256=manifest_digest(pre_manifest))
         st.update(sandbox=sandbox.path, pre_manifest=pre_manifest)
@@ -318,8 +395,9 @@ class Supervisor:
         self._hook("after_worker", state=st)
 
         # ---------------- independent scope check on the REAL on-disk diff (worker claims ignored)
-        mid_manifest = build_manifest(sandbox.path)
-        mid_changed = changed_paths(diff_manifests(pre_manifest, mid_manifest))
+        mid_manifest = build_manifest(sandbox.path, exclude_dirs=())
+        mid_scope_manifest = build_manifest(sandbox.path, exclude_dirs=(), exclude_suffixes=())
+        mid_changed = changed_paths(diff_manifests(pre_scope_manifest, mid_scope_manifest))
         claimed_files = list(getattr(wr, "changed_files", []) or [])
         all_to_check = sorted(set(mid_changed) | set(claimed_files))
         pol = policy.check_changed(all_to_check, sandbox.path)
@@ -335,8 +413,8 @@ class Supervisor:
                                     disallow_secret_leak=contract.get("disallow_secret_leak", True))
         st["report"] = report
         self._hook("after_qa", state=st)
-        post_manifest = build_manifest(sandbox.path)
-        prot_after = fingerprint_roots(protected, content=self.protected_content)
+        post_manifest = build_manifest(sandbox.path, exclude_dirs=())
+        prot_after = fingerprint_roots(protected, content=self.protected_content, max_content_files=2000)
         patch_path = self._write_evidence(evidence_dir, pre_manifest, post_manifest, source_root, sandbox.path)
         self.fsm.update_attempt(attempt_id, post_manifest_sha256=manifest_digest(post_manifest),
                                 diff_patch_path=str(patch_path))
@@ -382,7 +460,7 @@ class Supervisor:
         gate = None
         reasons: list[str] = []
         if scope_bad or leak_blocks:
-            prot_after = fingerprint_roots(protected, content=self.protected_content)
+            prot_after = fingerprint_roots(protected, content=self.protected_content, max_content_files=2000)
             gate = self.gate.evaluate(
                 job_id, attempt_id, lease_token=tok, lease_generation=gen, pre_manifest=pre_manifest,
                 post_manifest=post_manifest, qa_report=None, protected_before=prot_before,
@@ -473,7 +551,6 @@ class Supervisor:
 
     def reconstruct_from_handoff(self, handoff_path: str | os.PathLike, *, next_context_path: str | None = None) -> dict:
         """Rebuild/confirm job state from a machine-verified handoff (e.g. after DB loss)."""
-        existing = None
         res = handoff_ver.verify_handoff(handoff_path, db=None, hmac_key=self.hmac_key, require_signature=True)
         if not res.ok:
             self.db.append_audit("HANDOFF_IMPORT_REJECTED", payload={"errors": res.errors, "path": str(handoff_path)})
@@ -484,30 +561,102 @@ class Supervisor:
                 raise handoff_gen.HandoffError("; ".join(nres.errors))
         r = res.receipt
         job_id = r["job_id"]
+        contract_errs = self.validate_contract(r["contract"])
+        if contract_errs:
+            raise handoff_gen.HandoffError("; ".join(contract_errs))
         existing = self.db.get_state_row(job_id)
         if existing is not None:
             dres = handoff_ver.verify_handoff(handoff_path, db=self.db, hmac_key=self.hmac_key, require_signature=True)
             if not dres.ok:
                 raise handoff_gen.HandoffError("; ".join(dres.errors))
+            self.check_batch_gate(job_id)
             if existing["current_state"] == fsm.ACCEPTED:
                 self.fsm.transition(job_id, fsm.HANDOFF_VERIFIED, actor="handoff-import",
                                     idempotency_key=f"handoff-verified:{job_id}:{res.receipt_sha256}")
             return {"job_id": job_id, "state": self.fsm.state(job_id), "reconstructed": False}
         pj = r["project"]
-        self.db.register_project(pj["project_id"], pj["name"], pj["canonical_root"],
-                                 r["protected_boundary"].get("roots", []), pj["serena_policy"])
-        self.fsm.create_job(r["contract"])
-        self.fsm.approve_contract(job_id, "reconstructed-from-handoff")
+        pb = r["protected_boundary"]
         with self.db.transaction() as c:
-            c.execute("UPDATE job_states SET current_state=?, updated_at=? WHERE job_id=?",
-                      (fsm.HANDOFF_VERIFIED, self.db.now_iso(), job_id))
-            self.db.append_audit("RECONSTRUCTED_FROM_HANDOFF", job_id=job_id, from_state=fsm.DRAFT,
-                                 to_state=fsm.HANDOFF_VERIFIED,
-                                 payload={"receipt_sha256": res.receipt_sha256,
-                                          "handoff_file_sha256": res.handoff_file_sha256,
-                                          "evidence_manifest_sha256": r["evidence_manifest_sha256"]},
-                                 idempotency_key=f"reconstruct:{job_id}:{res.receipt_sha256}")
-        return {"job_id": job_id, "state": fsm.HANDOFF_VERIFIED, "reconstructed": True}
+            self.db.register_project(pj["project_id"], pj["name"], pj["canonical_root"],
+                                     pb.get("roots", []), pj["serena_policy"])
+            self.fsm.create_job(r["contract"])
+            self.check_batch_gate(job_id)
+            self.fsm.approve_contract(job_id, "reconstructed-from-handoff")
+            self.fsm.transition(job_id, fsm.PLAN_APPROVED, actor="handoff-import")
+            self.fsm.transition(job_id, fsm.QUEUED, actor="handoff-import")
+            lease = self.fsm.acquire_lease(job_id, "handoff-import", self.lease_ttl)
+            attempt_id = self.fsm.create_attempt(
+                job_id,
+                worker_type="handoff-import",
+                lease_token=lease.token,
+                lease_generation=lease.generation,
+            )
+            for target_state in (fsm.PREFLIGHT_PASSED, fsm.RUNNING, fsm.QA_RUNNING, fsm.REVIEWING):
+                self.fsm.transition(
+                    job_id,
+                    target_state,
+                    lease_token=lease.token,
+                    lease_generation=lease.generation,
+                    attempt_id=attempt_id,
+                    actor="handoff-import",
+                )
+            vid = r.get("verification_id") or uuid.uuid4().hex
+            commands_payload = [
+                {
+                    "check_id": f"reconstruct-{i}",
+                    "command": cmd.get("command", ""),
+                    "exit_code": cmd.get("exit_code", 0),
+                    "status": cmd.get("status", "PASSED"),
+                }
+                for i, cmd in enumerate(r.get("qa_commands") or [])
+            ]
+            c.execute(
+                "INSERT INTO qa_verifications(verification_id,attempt_id,job_id,commands_run_json,all_exit_zero,"
+                "allowlist_diff_ok,protected_roots_untouched,role_d_review_json,gate_verdict,"
+                "evidence_manifest_sha256,verified_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    vid,
+                    attempt_id,
+                    job_id,
+                    canonical_json(commands_payload),
+                    1,
+                    1 if pb.get("allowlist_diff_ok") else 0,
+                    1 if pb.get("untouched") else 0,
+                    None,
+                    "ACCEPTED",
+                    r.get("evidence_manifest_sha256"),
+                    self.db.now_iso(),
+                ),
+            )
+            self.fsm.finish_attempt(attempt_id, worker_status="COMPLETED")
+            self.fsm.transition(
+                job_id,
+                fsm.ACCEPTED,
+                lease_token=lease.token,
+                lease_generation=lease.generation,
+                attempt_id=attempt_id,
+                actor="handoff-import",
+            )
+            self.fsm.transition(
+                job_id,
+                fsm.HANDOFF_VERIFIED,
+                actor="handoff-import",
+                idempotency_key=f"handoff-verified:{job_id}:{res.receipt_sha256}",
+                payload={"receipt_sha256": res.receipt_sha256, "handoff_file_sha256": res.handoff_file_sha256},
+            )
+            self.db.append_audit(
+                "RECONSTRUCTED_FROM_HANDOFF",
+                job_id=job_id,
+                from_state=fsm.DRAFT,
+                to_state=fsm.HANDOFF_VERIFIED,
+                payload={
+                    "receipt_sha256": res.receipt_sha256,
+                    "handoff_file_sha256": res.handoff_file_sha256,
+                    "evidence_manifest_sha256": r["evidence_manifest_sha256"],
+                },
+                idempotency_key=f"reconstruct:{job_id}:{res.receipt_sha256}",
+            )
+        return {"job_id": job_id, "state": self.fsm.state(job_id), "reconstructed": True}
 
     def status(self) -> dict:
         rows = self.db.query(

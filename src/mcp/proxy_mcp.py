@@ -6,6 +6,9 @@ Zero external pip dependencies (Python 3.14 standard library only).
 """
 from __future__ import annotations
 
+import base64
+import ctypes
+from ctypes import wintypes
 import json
 import os
 import re
@@ -27,15 +30,89 @@ from src.workers.cli_harness_worker import kill_process_tree
 DEFAULT_EXTERNAL_MCP_PATH = REPO_ROOT / ".runtime" / "mcp_configs" / "external.json"
 SERVER_NAME_RE = re.compile(r"^[0-9a-zA-Z_-]{2,64}$")
 FORBIDDEN_MARKERS = ("9121", "rea project", "summoningremake")
+REDACTED_SECRET = "***REDACTED***"
+
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def encrypt_secret_dpapi(plain: str) -> str:
+    """Encrypt a secret string using Windows DPAPI (CryptProtectData), returning a 'dpapi:' prefixed base64 string."""
+    if not plain:
+        return ""
+    if plain.startswith("dpapi:"):
+        return plain
+    if sys.platform != "win32":
+        return "dpapi:" + base64.b64encode(plain.encode("utf-8")).decode("ascii")
+    raw = plain.encode("utf-8")
+    in_blob = _DATA_BLOB(len(raw), ctypes.cast(ctypes.create_string_buffer(raw, len(raw)), ctypes.POINTER(ctypes.c_char)))
+    out_blob = _DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptProtectData(ctypes.byref(in_blob), "secret", None, None, None, 0, ctypes.byref(out_blob)):
+        raise ctypes.WinError()
+    try:
+        buf = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return "dpapi:" + base64.b64encode(buf).decode("ascii")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+
+def decrypt_secret_dpapi(cipher: str) -> str:
+    """Decrypt a 'dpapi:' prefixed base64 string using Windows DPAPI (CryptUnprotectData)."""
+    if not cipher:
+        return ""
+    if not cipher.startswith("dpapi:"):
+        return cipher
+    raw = base64.b64decode(cipher[len("dpapi:"):])
+    if sys.platform != "win32":
+        return raw.decode("utf-8")
+    in_blob = _DATA_BLOB(len(raw), ctypes.cast(ctypes.create_string_buffer(raw, len(raw)), ctypes.POINTER(ctypes.c_char)))
+    out_blob = _DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData).decode("utf-8")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+
+def redact_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Redact non-empty secret values to '***REDACTED***'."""
+    out: Dict[str, str] = {}
+    for k, v in env.items():
+        out[k] = REDACTED_SECRET if v else ""
+    return out
+
+
+def decrypt_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Decrypt encrypted env values in-memory."""
+    out: Dict[str, str] = {}
+    for k, v in env.items():
+        out[k] = decrypt_secret_dpapi(v) if v else ""
+    return out
+
+
+def encrypt_env(env: Dict[str, str], existing_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Encrypt env dictionary, preserving existing encrypted secrets when '***REDACTED***' is passed."""
+    out: Dict[str, str] = {}
+    existing = existing_env or {}
+    for k, v in env.items():
+        if v == REDACTED_SECRET:
+            out[k] = existing.get(k, "")
+        elif v and not v.startswith("dpapi:"):
+            out[k] = encrypt_secret_dpapi(v)
+        else:
+            out[k] = v or ""
+    return out
 
 BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
     "lnwjud": {
         "name": "lnwjud",
         "command": "npx",
-        "args": ["-y", "@engasnm111/lnwjud"],
+        "args": ["--no-install", "@engasnm111/lnwjud@1.0.0"],
         "env": {},
-        "enabled": True,
-        "description": "Lnwjud External MCP Server (@engasnm111/lnwjud)",
+        "enabled": False,
+        "description": "Lnwjud External MCP Server (@engasnm111/lnwjud@1.0.0)",
         "working_directory": "",
     },
 }
@@ -144,28 +221,30 @@ class ExternalMCPRegistry:
             tmp_path = Path(tmp.name)
         os.replace(tmp_path, self.file_path)
 
-    def read_map(self) -> Dict[str, Dict[str, Any]]:
+    def read_map(self, redact_secrets: bool = True) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             raw = self._read_raw().get("mcpServers", {})
             out: Dict[str, Dict[str, Any]] = {}
             for name, cfg in raw.items():
                 if isinstance(cfg, dict):
+                    raw_env = dict(cfg.get("env", {}))
+                    processed_env = redact_env(raw_env) if redact_secrets else decrypt_env(raw_env)
                     out[name] = {
                         "name": name,
                         "command": cfg.get("command", ""),
                         "args": list(cfg.get("args", [])),
-                        "env": dict(cfg.get("env", {})),
+                        "env": processed_env,
                         "enabled": bool(cfg.get("enabled", True)),
                         "description": cfg.get("description", ""),
                         "working_directory": cfg.get("working_directory", ""),
                     }
             return out
 
-    def list_servers(self) -> List[Dict[str, Any]]:
-        return list(self.read_map().values())
+    def list_servers(self, redact_secrets: bool = True) -> List[Dict[str, Any]]:
+        return list(self.read_map(redact_secrets=redact_secrets).values())
 
-    def get_server(self, name: str) -> Optional[Dict[str, Any]]:
-        return self.read_map().get(name)
+    def get_server(self, name: str, redact_secrets: bool = False) -> Optional[Dict[str, Any]]:
+        return self.read_map(redact_secrets=redact_secrets).get(name)
 
     def register_server(self, data: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
@@ -173,10 +252,16 @@ class ExternalMCPRegistry:
             entry = validate_server_entry(name, data, workspace_root=self.workspace_root)
             doc = self._read_raw()
             servers = doc.setdefault("mcpServers", {})
+            existing = servers.get(name, {})
+            existing_env = existing.get("env", {}) if isinstance(existing, dict) else {}
+            encrypted_env = encrypt_env(entry["env"], existing_env=existing_env)
             stored = {k: v for k, v in entry.items() if k != "name"}
+            stored["env"] = encrypted_env
             servers[name] = stored
             self._write_raw(doc)
-            return entry
+            ret = dict(entry)
+            ret["env"] = redact_env(encrypted_env)
+            return ret
 
     def remove_server(self, name: str) -> bool:
         clean_name = str(name or "").strip()
@@ -201,8 +286,18 @@ class ExternalMCPRegistry:
     def replace_map(self, servers_map: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             validated = self.validate_map(servers_map)
-            self._write_raw({"mcpServers": validated})
-            return self.read_map()
+            doc = self._read_raw()
+            existing_servers = doc.get("mcpServers", {})
+            encrypted_map: Dict[str, Any] = {}
+            for name, cfg in validated.items():
+                existing = existing_servers.get(name, {})
+                existing_env = existing.get("env", {}) if isinstance(existing, dict) else {}
+                enc_env = encrypt_env(cfg.get("env", {}), existing_env=existing_env)
+                item = dict(cfg)
+                item["env"] = enc_env
+                encrypted_map[name] = item
+            self._write_raw({"mcpServers": encrypted_map})
+            return self.read_map(redact_secrets=True)
 
 
 def _resolve_command(command: str) -> Optional[str]:
@@ -289,7 +384,7 @@ def probe_external_mcp(
     name = str(server_config.get("name", "external")).strip() or "external"
     command = str(server_config.get("command", "")).strip()
     args = [str(a) for a in server_config.get("args", [])]
-    env = dict(server_config.get("env", {}))
+    env = decrypt_env(dict(server_config.get("env", {})))
     enabled = bool(server_config.get("enabled", True))
     effective_cwd = str(server_config.get("working_directory") or cwd or REPO_ROOT)
 
@@ -380,7 +475,7 @@ def call_external_mcp_tool(
     """Forward a single `tools/call` invocation to an external stdio MCP server."""
     command = str(server_config.get("command", "")).strip()
     args = [str(a) for a in server_config.get("args", [])]
-    env = dict(server_config.get("env", {}))
+    env = decrypt_env(dict(server_config.get("env", {})))
     effective_cwd = str(server_config.get("working_directory") or cwd or REPO_ROOT)
 
     requests = [

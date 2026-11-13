@@ -197,11 +197,17 @@ class DashboardSettingsStore:
         policy = self.get_model_policy_overrides()
         ext_servers: Dict[str, Any] = {}
         if external_registry is not None:
-            ext_servers = external_registry.read_map()
+            ext_servers = external_registry.read_map(redact_secrets=True)
         else:
             rec = self._get_raw("external_mcp_servers")
             if rec is not None and isinstance(rec[0], dict):
-                ext_servers = rec[0]
+                from src.mcp.proxy_mcp import redact_env
+                ext_servers = {}
+                for sname, scfg in rec[0].items():
+                    scopy = dict(scfg)
+                    if "env" in scopy and isinstance(scopy["env"], dict):
+                        scopy["env"] = redact_env(scopy["env"])
+                    ext_servers[sname] = scopy
 
         with self._lock:
             conn = self._connect()
@@ -256,11 +262,23 @@ class DashboardSettingsStore:
 
         if ext_payload is not None:
             if external_registry is not None:
-                saved_map = external_registry.replace_map(ext_payload)
+                external_registry.replace_map(ext_payload)
+                saved_map = external_registry._read_raw().get("mcpServers", {})
             else:
                 if not isinstance(ext_payload, dict):
                     raise ValueError("external_mcp_servers must be an object")
-                saved_map = ext_payload
+                from src.mcp.proxy_mcp import encrypt_env
+                rec = self._get_raw("external_mcp_servers")
+                existing_map = rec[0] if rec and isinstance(rec[0], dict) else {}
+                saved_map = {}
+                for sname, scfg in ext_payload.items():
+                    if isinstance(scfg, dict):
+                        scopy = dict(scfg)
+                        existing_env = existing_map.get(sname, {}).get("env", {}) if isinstance(existing_map.get(sname), dict) else {}
+                        scopy["env"] = encrypt_env(dict(scopy.get("env", {})), existing_env=existing_env)
+                        saved_map[sname] = scopy
+                    else:
+                        saved_map[sname] = scfg
             self._set_raw("external_mcp_servers", saved_map, role=norm_role)
 
         if "model_policy_overrides" in payload and payload["model_policy_overrides"] is not None:

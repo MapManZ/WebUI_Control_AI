@@ -3,8 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{CSRF_TOKEN}}">
   <title>WebUI Control AI · Multi-Agent Orchestra</title>
   <link rel="stylesheet" href="/dashboard.css">
+  <script>
+    (function() {
+      window.__orchestra_csrf = "{{CSRF_TOKEN}}";
+      const _origFetch = window.fetch;
+      window.fetch = async function(url, options = {}) {
+        const opts = { ...options };
+        const method = (opts.method || "GET").toUpperCase();
+        if (["POST", "DELETE", "PUT", "PATCH"].includes(method)) {
+          if (!window.__orchestra_csrf || window.__orchestra_csrf === "{{CSRF_TOKEN}}") {
+            try {
+              const h = await (await _origFetch("/api/health")).json();
+              if (h && h.csrf_token) window.__orchestra_csrf = h.csrf_token;
+            } catch (_) {}
+          }
+          opts.headers = {
+            ...(opts.headers || {}),
+            "X-Orchestra-CSRF": window.__orchestra_csrf || "",
+          };
+          if (opts.body && typeof opts.body === "string" && !opts.headers["Content-Type"]) {
+            opts.headers["Content-Type"] = "application/json";
+          }
+        }
+        return _origFetch(url, opts);
+      };
+    })();
+  </script>
   <script src="/dashboard.js" defer></script>
 </head>
 <body>
@@ -352,11 +379,11 @@
               <div>
                 <span class="badge-num">05 / MCP INTEGRATIONS</span>
                 <h2 title="จัดการการเชื่อมต่อ MCP ภายนอก (External MCP Servers): รองรับ Lnwjud และเซิร์ฟเวอร์ stdio MCP อื่นๆ โดยบันทึกลง .runtime/mcp_configs/external.json" data-tooltip="ลงทะเบียนและทดสอบ External MCP Servers (เช่น Lnwjud)">
-                  External MCP Servers &amp; Lnwjud Bridge <span class="tooltip-badge" title="เชื่อมต่อ External MCP Servers เช่น Lnwjud (npx -y @engasnm111/lnwjud) ผ่าน proxy_mcp.py โดยเก็บค่าใน .runtime/mcp_configs/external.json">?</span>
+                  External MCP Servers &amp; Lnwjud Bridge <span class="tooltip-badge" title="เชื่อมต่อ External MCP Servers เช่น Lnwjud (npx --no-install @engasnm111/lnwjud@1.0.0) ผ่าน proxy_mcp.py โดยเก็บค่าใน .runtime/mcp_configs/external.json">?</span>
                 </h2>
               </div>
               <div class="bundle-actions">
-                <button id="load-lnwjud-preset-btn" class="btn btn-ghost btn-sm" type="button" title="เติมค่าเริ่มต้นของ Lnwjud MCP (npx -y @engasnm111/lnwjud) ลงในฟอร์มทันที">⚡ Load Lnwjud Preset</button>
+                <button id="load-lnwjud-preset-btn" class="btn btn-ghost btn-sm" type="button" title="เติมค่าเริ่มต้นของ Lnwjud MCP (npx --no-install @engasnm111/lnwjud@1.0.0) ลงในฟอร์มทันที">⚡ Load Lnwjud Preset</button>
                 <button id="refresh-mcp-btn" class="btn btn-ghost btn-sm" type="button" title="รีเฟรชรายการ External MCP Servers จาก .runtime/mcp_configs/external.json">↻ Refresh Servers</button>
               </div>
             </div>
@@ -376,10 +403,10 @@
                   <input id="mcp-server-command" required placeholder="npx" title="ระบุคำสั่งรัน เช่น npx">
                 </div>
                 <div class="form-group">
-                  <label for="mcp-server-args" title="อาร์กิวเมนต์ของคำสั่ง คั่นด้วยช่องว่าง เช่น -y @engasnm111/lnwjud" data-tooltip="รายการอาร์กิวเมนต์ของคำสั่ง MCP">
-                    Arguments <span class="tooltip-badge" title="อาร์กิวเมนต์คั่นด้วยช่องว่าง เช่น -y @engasnm111/lnwjud">?</span>
+                  <label for="mcp-server-args" title="อาร์กิวเมนต์ของคำสั่ง คั่นด้วยช่องว่าง เช่น --no-install @engasnm111/lnwjud@1.0.0" data-tooltip="รายการอาร์กิวเมนต์ของคำสั่ง MCP">
+                    Arguments <span class="tooltip-badge" title="อาร์กิวเมนต์คั่นด้วยช่องว่าง เช่น --no-install @engasnm111/lnwjud@1.0.0">?</span>
                   </label>
-                  <input id="mcp-server-args" placeholder="-y @engasnm111/lnwjud" title="ระบุอาร์กิวเมนต์ เช่น -y @engasnm111/lnwjud">
+                  <input id="mcp-server-args" placeholder="--no-install @engasnm111/lnwjud@1.0.0" title="ระบุอาร์กิวเมนต์ เช่น --no-install @engasnm111/lnwjud@1.0.0">
                 </div>
               </div>
 
@@ -388,15 +415,15 @@
                   <label for="mcp-server-desc" title="คำอธิบายหน้าที่ของเซิร์ฟเวอร์ MCP นี้" data-tooltip="คำอธิบายเพิ่มเติมของเซิร์ฟเวอร์">
                     Description
                   </label>
-                  <input id="mcp-server-desc" placeholder="Lnwjud External MCP Server (@engasnm111/lnwjud)" title="คำอธิบายสั้นๆ ของเซิร์ฟเวอร์ MCP">
+                  <input id="mcp-server-desc" placeholder="Lnwjud External MCP Server (@engasnm111/lnwjud@1.0.0)" title="คำอธิบายสั้นๆ ของเซิร์ฟเวอร์ MCP">
                 </div>
                 <div class="form-group">
                   <label for="mcp-server-enabled" title="เปิดหรือปิดการใช้งานเซิร์ฟเวอร์ MCP นี้ใน Proxy" data-tooltip="เลือกเปิด/ปิดการใช้งานใน Proxy">
                     Status
                   </label>
                   <select id="mcp-server-enabled" title="สถานะการเปิดใช้งานเซิร์ฟเวอร์">
-                    <option value="true" selected>Enabled (Active in Proxy)</option>
-                    <option value="false">Disabled</option>
+                    <option value="false" selected>Disabled (Default)</option>
+                    <option value="true">Enabled (Active in Proxy)</option>
                   </select>
                 </div>
               </div>
