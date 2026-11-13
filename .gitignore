@@ -1,0 +1,41 @@
+# Runtime state, database & temporary sandboxes
+.runtime/
+
+# Local browser config (contains machine-specific ports/profiles)
+# We track config/browser_targets.example.json instead
+config/browser_targets.json
+
+# Python cache & build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment & Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Windows OS system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Session & internal planning artifacts
+*.pdf
+implementation_plan.md
+walkthrough.md
+docs/architecture/DISCOVERY_INVENTORY_*.json
+

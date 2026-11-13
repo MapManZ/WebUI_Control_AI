@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.1.0",
+  "supported_models": {
+    "gemini-3.8-flash": {
+      "display_name": "Gemini 3.8 Flash",
+      "tier": "default_worker",
+      "role": "worker",
+      "allow_worker_execution": true,
+      "default": true,
+      "description": "Default Worker model for general coding & fast execution"
+    },
+    "gemini-4-hydrogen": {
+      "display_name": "Gemini 4 Hydrogen",
+      "tier": "high_capability_worker",
+      "role": "worker",
+      "allow_worker_execution": true,
+      "default": false,
+      "description": "High-capability Worker model for reasoning, implementation & multi-step tasks"
+    },
+    "claude-sonnet-5.5": {
+      "display_name": "Claude Sonnet 5.5",
+      "tier": "hard_task_worker",
+      "role": "worker",
+      "allow_worker_execution": true,
+      "default": false,
+      "description": "Hard-task Worker model reserved for complex architecture/security tasks"
+    },
+    "gemini-4-argon": {
+      "display_name": "Gemini 4 Argon",
+      "tier": "coordinator_reviewer_merge",
+      "role": "reviewer_merge_only",
+      "allow_worker_execution": false,
+      "default": false,
+      "description": "Coordinator/Reviewer/Merge-Only model; never used as a regular coding worker"
+    }
+  },
+  "model_policy": {
+    "default_worker_model": "gemini-3.8-flash",
+    "allowed_worker_models": [
+      "gemini-3.8-flash",
+      "gemini-4-hydrogen",
+      "claude-sonnet-5.5"
+    ],
+    "reviewer_merge_only_models": [
+      "gemini-4-argon"
+    ],
+    "rules": {
+      "gemini-4-argon": {
+        "role": "reviewer_merge_only",
+        "allow_worker_execution": false,
+        "allowed_roles": ["reviewer", "merge"],
+        "block_message": "Policy block: Gemini 4 Argon is reserved for Review and Merge only; use Gemini 3.8 Flash, Gemini 4 Hydrogen, or Claude Sonnet 5.5 for worker tasks"
+      }
+    }
+  },
+  "harnesses": {
+    "antigravity": {
+      "name": "Google Antigravity CLI",
+      "executable": "%LOCALAPPDATA%\\agy\\bin\\agy.exe",
+      "wrapper": "bin\\agy-cli.cmd",
+      "version_args": ["--version"],
+      "protocols": ["mcp", "cli"],
+      "optional": false,
+      "description": "Antigravity developer CLI and MCP server bridge"
+    },
+    "opencode": {
+      "name": "OpenCode Desktop CLI",
+      "executable": "%LOCALAPPDATA%\\Programs\\ai.opencode.desktop\\resources\\opencode-cli.exe",
+      "wrapper": "bin\\opencode-cli.cmd",
+      "version_args": ["--version"],
+      "run_args_template": ["--prompt", "{prompt}", "--standalone", "{sandbox}"],
+      "protocols": ["cli", "acp", "mcp"],
+      "optional": false,
+      "description": "OpenCode local autonomous coding agent"
+    },
+    "hermes": {
+      "name": "Hermes Agent CLI",
+      "executable": "%LOCALAPPDATA%\\hermes\\bin\\hermes.exe",
+      "wrapper": "bin\\hermes-cli.cmd",
+      "version_args": ["--version"],
+      "run_args_template": ["-z", "{prompt}", "--in", "{sandbox}", "--no-restore-cwd", "--safe-mode"],
+      "profiles": ["default", "fast", "research", "reviewer"],
+      "protocols": ["cli", "acp", "mcp"],
+      "optional": false,
+      "description": "Nous Research Hermes agent CLI with multi-profile and safe mode support"
+    },
+    "dsh": {
+      "name": "DeepSeek Harness CLI",
+      "executable": "%LOCALAPPDATA%\\Programs\\DeepSeek Harness\\DeepSeek Harness.exe",
+      "wrapper": "bin\\dsh-cli.cmd",
+      "version_args": ["--version"],
+      "run_args_template": ["--profile", "headless", "--json", "{prompt}"],
+      "protocols": ["cli", "acp", "mcp"],
+      "optional": false,
+      "description": "DeepSeek Harness unlocked via Electron Node mode for headless execution"
+    },
+    "codex": {
+      "name": "Codex Agent CLI (Extensible)",
+      "executable": "codex",
+      "wrapper": "bin\\codex-cli.cmd",
+      "version_args": ["--version"],
+      "run_args_template": ["exec", "--prompt", "{prompt}"],
+      "protocols": ["cli"],
+      "optional": true,
+      "description": "Optional/extensible Codex harness placeholder"
+    }
+  }
+}

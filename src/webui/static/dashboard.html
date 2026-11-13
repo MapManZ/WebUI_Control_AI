@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebUI Control AI · Multi-Agent Orchestra</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <div class="app-layout">
+    <aside class="sidebar" title="แถบเมนูด้านข้าง (Sidebar): แสดงสถานะการเชื่อมต่อ, โฟลเดอร์ทำงานปัจจุบัน, ค่าย AI ที่รองรับ, นโยบายโมเดล และประวัติงานล่าสุด" data-tooltip="แถบเมนูด้านข้าง (Sidebar): ศูนย์นำทางและตรวจสอบสถานะระบบทั้งหมด">
+      <div class="brand" title="WebUI Control AI: ระบบประสานงาน Multi-Agent Orchestra เชื่อมต่อ 5 WebUI และ 4 Local CLI" data-tooltip="ศูนย์ควบคุมวงดนตรี AI หลายตัว (Multi-Agent Orchestra)">
+        <span class="brand-logo">◈</span>
+        <div class="brand-text">
+          <span class="brand-title">WebUI Control AI</span>
+          <span class="brand-sub">Multi-Agent Orchestra</span>
+        </div>
+      </div>
+
+      <div class="nav-section-title" title="แผงควบคุมหลัก: สลับระหว่างหน้าส่งงาน (Relay Board), เชื่อมต่อ MCP ภายนอก และตั้งค่าระบบ" data-tooltip="แผงควบคุมหลักสำหรับสลับหน้าจอการทำงาน">CONTROL PLANE</div>
+      <nav class="nav-tabs" aria-label="Dashboard sections">
+        <button type="button" class="nav-pill active" data-tab="relay" title="หน้ากระดานส่งต่อคำสั่ง (Context Relay Board): สร้างใบสั่งงาน B/C/D ตรวจสอบ SHA-256 และจัดการคลังข้อมูลอ้างอิง" data-tooltip="กระดานส่งต่อคำสั่ง 3 บริบท (B/C/D) และคลังอ้างอิง">▦ Context Relay Board</button>
+        <button type="button" class="nav-pill" data-tab="mcp" title="การเชื่อมต่อ MCP ภายนอก (MCP Integrations): ลงทะเบียน ทดสอบ และจัดการเซิร์ฟเวอร์ MCP เช่น Lnwjud" data-tooltip="เชื่อมต่อและทดสอบ MCP ภายนอก เช่น Lnwjud">🔌 MCP Integrations</button>
+        <button type="button" class="nav-pill" data-tab="settings" title="ตั้งค่าระบบ (Settings): จัดการ Active Working Directory, รายชื่อ MCP ภายนอก และสิทธิ์ Model Policy Overrides" data-tooltip="ตั้งค่าโฟลเดอร์ทำงาน, MCP ภายนอก และนโยบายโมเดล">⚙ Settings</button>
+      </nav>
+
+      <div class="nav-section-title" title="โฟลเดอร์ทำงานปัจจุบัน (Active Working Directory): ขอบเขตโฟลเดอร์ที่ Agent และ MCP ใช้งานได้ภายใต้ PathGuard" data-tooltip="โฟลเดอร์ทำงานปัจจุบันที่ผ่านการตรวจสอบ PathGuard แล้ว">ACTIVE WORKING DIRECTORY</div>
+      <div id="sidebar-workdir-box" class="workdir-box" title="Active Working Directory: โฟลเดอร์ทำงานปัจจุบันที่อนุญาตให้ระบบอ่าน/อ้างอิงได้ (เปลี่ยนได้ในแท็บ Settings)" data-tooltip="คลิกเพื่อแก้ไข Active Working Directory ในแท็บ Settings">
+        <span class="workdir-label">Active Working Directory</span>
+        <code id="sidebar-workdir-path" class="workdir-path">Loading...</code>
+      </div>
+
+      <div class="nav-section-title" title="5 เว็บแชต AI (WebUI) ที่รองรับการสร้างชุดคำสั่ง Prompt แบบเข้ารหัส SHA-256" data-tooltip="เว็บแชต AI ทั้ง 5 ค่ายที่รองรับการส่งชุดคำสั่งแบบ 1-Click Copy">SUPPORTED WEBUI TARGETS</div>
+      <div class="provider-badges">
+        <span class="badge webui-badge claude" title="Claude (claude.ai): เหมาะกับงานวิเคราะห์โครงสร้างและโค้ดที่ต้องการความถูกต้องสูง">Claude</span>
+        <span class="badge webui-badge chatgpt" title="ChatGPT (chatgpt.com): เหมาะกับการตรวจสอบข้อมูล วางแผน และสร้าง Test Case">ChatGPT</span>
+        <span class="badge webui-badge gemini" title="Gemini (gemini.google.com): เหมาะกับงานทบทวนบริบทขนาดใหญ่และตรวจจุดบกพร่อง">Gemini</span>
+        <span class="badge webui-badge glm" title="GLM (chat.z.ai / chatglm.cn): โมเดลทางเลือกสำหรับเปรียบเทียบมุมมอง">GLM</span>
+        <span class="badge webui-badge deepseek" title="DeepSeek (chat.deepseek.com): เด่นด้านการคิดวิเคราะห์เชิงลึก (Deep Thinking)">DeepSeek</span>
+      </div>
+
+      <div class="nav-section-title" title="4 โปรแกรม Agent CLI บนเครื่องที่สั่งรันงานใน Sandbox ได้โดยตรง" data-tooltip="โปรแกรม CLI บนเครื่องที่พร้อมใช้งานร่วมกับ Orchestra">LOCAL AGENT CLIS</div>
+      <div class="provider-badges">
+        <span class="badge cli-badge agy" title="Antigravity CLI (agy-cli.cmd): Agent หลักพร้อมรองรับโปรโตคอล MCP">Antigravity</span>
+        <span class="badge cli-badge opencode" title="OpenCode CLI (opencode-cli.cmd): Agent เขียนโค้ดแบบ Standalone ใน Sandbox">OpenCode</span>
+        <span class="badge cli-badge hermes" title="Hermes CLI (hermes-cli.cmd): รองรับหลายโปรไฟล์และโหมดปลอดภัย">Hermes</span>
+        <span class="badge cli-badge dsh" title="DeepSeek Harness CLI (dsh-cli.cmd): สั่งงาน DeepSeek แบบ Headless บน Windows">DSH</span>
+      </div>
+
+      <div class="nav-section-title" title="กฎการใช้โมเดล 4 ระดับ (Model Tier Policy): แยกโมเดลคนทำงานและโมเดลตรวจรับงานอย่างชัดเจน" data-tooltip="นโยบายแบ่งระดับโมเดล 4 ระดับ (Argon ใช้ตรวจรับเท่านั้น)">MODEL TIER POLICY</div>
+      <div class="provider-badges">
+        <span class="badge model-badge flash" title="Gemini 3.8 Flash: โมเดลคนทำงานหลัก รวดเร็ว ประหยัดโควตา">Gemini 3.8 Flash [Default Worker]</span>
+        <span class="badge model-badge hydrogen" title="Gemini 4 Hydrogen: โมเดลเสริมพลังสำหรับงานคิดวิเคราะห์หลายขั้นตอน">Gemini 4 Hydrogen [Worker]</span>
+        <span class="badge model-badge sonnet" title="Claude Sonnet 5.5: สำรองไว้สำหรับงานสถาปัตยกรรมและความปลอดภัยขั้นสูง">Claude Sonnet 5.5 [Hard Tasks Only]</span>
+        <span class="badge model-badge argon" title="Gemini 4 Argon: สงวนไว้สำหรับตรวจรับงาน (Review) และรวมผล (Merge) เท่านั้น ห้ามใช้เขียนโค้ดทั่วไป">Gemini 4 Argon [Review &amp; Merge Only]</span>
+      </div>
+
+      <div class="nav-section-title" title="ประวัติใบสั่งงานล่าสุด (Recent Jobs): คลิกที่รายการเพื่อเปิดดู Prompt หรือส่งคำตอบย้อนหลัง" data-tooltip="รายการงานล่าสุดใน HubStore คลิกเพื่อเปิดดูรายละเอียด">RECENT JOBS</div>
+      <div id="recent-jobs" class="recent-list">
+        <span class="empty-hint">Loading jobs...</span>
+      </div>
+
+      <div class="sidebar-footer" title="เซิร์ฟเวอร์ทำงานเฉพาะเครื่อง Localhost (127.0.0.1) เท่านั้น ไม่เปิดพอร์ตสู่ภายนอก" data-tooltip="รันบน 127.0.0.1 เท่านั้นเพื่อความปลอดภัยสูงสุด">
+        <span class="status-dot online"></span>
+        <span>127.0.0.1 LOCAL SECURE</span>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="top-nav">
+        <div class="breadcrumbs" title="แถบนำทางด้านบน (Title Bar): แสดงตำแหน่งหน้าปัจจุบันและ Active Working Directory" data-tooltip="แสดงตำแหน่งหน้าปัจจุบันในระบบ Orchestra">
+          <span>Orchestra</span> / <span>WebUI Control AI</span> / <b id="active-tab-breadcrumb">Relay &amp; Verification Board</b>
+        </div>
+        <div class="top-tags">
+          <span class="pill-tag workdir-pill" title="Active Working Directory: โฟลเดอร์ทำงานปัจจุบันที่ถูกจำกัดสิทธิ์ภายใต้ PathGuard" data-tooltip="โฟลเดอร์ทำงานปัจจุบัน (Active Working Directory)">
+            📁 Active Working Directory: <code id="topbar-workdir-path">Loading...</code>
+          </span>
+          <span class="pill-tag" title="ระบบส่งงานภายในขอบเขต Sandbox ป้องกันการเขียนทับไฟล์นอกโครงการหรือโฟลเดอร์ต้องห้าม" data-tooltip="ยืนยันการทำงานแบบ Sandbox ปลอดภัย">SANDBOXED DISPATCH</span>
+          <span class="pill-tag green" title="พร้อมเชื่อมต่อผ่านโปรโตคอล MCP (Model Context Protocol) ทั้ง Orchestra และ External MCP" data-tooltip="MCP พร้อมใช้งานสำหรับทุก Agent">MCP READY</span>
+        </div>
+      </header>
+
+      <div class="content-container">
+        <!-- TAB 1: Context Relay Board -->
+        <div id="tab-relay" class="tab-panel">
+          <!-- Section 1: Dispatch Job -->
+          <section class="card-panel">
+            <div class="panel-header">
+              <div>
+                <span class="badge-num">01 / DISPATCH</span>
+                <h2 title="สร้างใบสั่งงานใหม่ (New Orchestra Assignment): แบ่งงานออกเป็น 3 บริบท (B วิเคราะห์, C ตรวจสอบ, D ทบทวน) พร้อมลายเซ็น SHA-256" data-tooltip="สร้างใบสั่งงานใหม่ 3 บริบท (B/C/D) พร้อมลายเซ็นป้องกันการปลอมแปลง SHA-256">
+                  New Orchestra Assignment <span class="tooltip-badge" title="สร้างใบสั่งงานใหม่เพื่อแจกจ่ายไปยัง 3 เว็บแชต AI (B/C/D) พร้อมรหัสตรวจสอบความถูกต้อง SHA-256">?</span>
+                </h2>
+              </div>
+              <span class="panel-subtitle" title="สร้างชุดคำสั่ง B, C, D ที่มีค่าแฮช SHA-256 กำกับทุกชุด">Create verified B/C/D work packets</span>
+            </div>
+
+            <form id="create-job-form">
+              <div class="form-grid-3">
+                <div class="form-group">
+                  <label for="case-id" title="รหัสอ้างอิงเคสงาน (Case Identifier): ใช้ตั้งชื่อและจัดกลุ่มงานในประวัติ เช่น ORCH-DISPATCH-001" data-tooltip="รหัสเคสงานสำหรับอ้างอิงและค้นหาในประวัติ">
+                    Case Identifier <span class="tooltip-badge" title="รหัสอ้างอิงเคสงาน เช่น ORCH-DISPATCH-001 ช่วยแยกแยะงานแต่ละชิ้นในประวัติ">?</span>
+                  </label>
+                  <input id="case-id" required maxlength="96" value="ORCH-DISPATCH-001" title="กรอกรหัสอ้างอิงเคสงาน (สูงสุด 96 ตัวอักษร)">
+                </div>
+                <div class="form-group">
+                  <label for="model-tier" title="ระดับโมเดล (Model Tier): เลือกโมเดลตามความซับซ้อนของงาน (Flash งานทั่วไป, Hydrogen งานคิดวิเคราะห์, Sonnet งานยาก, Argon ตรวจรับเท่านั้น)" data-tooltip="เลือกระดับโมเดลให้เหมาะกับบทบาทและความยากของงาน">
+                    Model Tier <span id="model-tier-badge" class="badge model-badge flash">Default Worker</span>
+                    <span class="tooltip-badge" title="นโยบายโมเดล 4 ระดับ: Flash (งานหลักเร็ว), Hydrogen (วิเคราะห์ซับซ้อน), Sonnet (งานยากพิเศษ), Argon (ตรวจรับและ Merge เท่านั้น)">?</span>
+                  </label>
+                  <select id="model-tier" title="เลือกระดับโมเดลสำหรับใบสั่งงานนี้">
+                    <option value="gemini-3.8-flash" selected>Gemini 3.8 Flash [Default Worker]</option>
+                    <option value="gemini-4-hydrogen">Gemini 4 Hydrogen [Worker]</option>
+                    <option value="claude-sonnet-5.5">Claude Sonnet 5.5 [Hard Tasks Only]</option>
+                    <option value="gemini-4-argon">Gemini 4 Argon [Review &amp; Merge Only]</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="ttl" title="กรอบเวลาส่งคำตอบ (Deadline Window): กำหนดอายุของชุดคำสั่ง หากส่งคำตอบเกินเวลา ระบบจะปฏิเสธอัตโนมัติ" data-tooltip="กำหนดเวลาหมดอายุของชุดคำสั่ง (TTL)">
+                    Deadline Window <span class="tooltip-badge" title="ระยะเวลาหมดอายุ (TTL) ของ Work Packet เพื่อป้องกันการนำคำตอบเก่าที่หมดอายุมาใช้ซ้ำ">?</span>
+                  </label>
+                  <select id="ttl" title="เลือกกรอบเวลาหมดอายุของ Work Packet">
+                    <option value="300" selected>5 minutes (300s)</option>
+                    <option value="600">10 minutes (600s)</option>
+                    <option value="1800">30 minutes (1800s)</option>
+                    <option value="3600">1 hour (3600s)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-grid-3 provider-assignment-row">
+                <div class="form-group">
+                  <label for="provider-b" title="เลือกเว็บแชต AI สำหรับบทบาท Context B (Analyst - ผู้วิเคราะห์หลัก)" data-tooltip="ผู้ให้บริการ AI สำหรับบทบาท B (นักวิเคราะห์)">
+                    Context B Provider <span class="tooltip-badge" title="บทบาท B (Analyst): วิเคราะห์โจทย์หลักและสรุปหลักฐาน">?</span>
+                  </label>
+                  <select id="provider-b" title="เลือกค่าย AI สำหรับ Context B">
+                    <option value="claude" selected>Claude (Anthropic)</option>
+                    <option value="chatgpt">ChatGPT (OpenAI)</option>
+                    <option value="gemini">Gemini (Google)</option>
+                    <option value="glm">GLM (Zhipu)</option>
+                    <option value="deepseek">DeepSeek</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="provider-c" title="เลือกเว็บแชต AI สำหรับบทบาท Context C (Verifier - ผู้ตรวจสอบตัวเลขและช่องโหว่)" data-tooltip="ผู้ให้บริการ AI สำหรับบทบาท C (ผู้ตรวจสอบ)">
+                    Context C Provider <span class="tooltip-badge" title="บทบาท C (Verifier): ตรวจสอบความถูกต้อง สมมติฐาน และหลักฐานที่ขาดหาย">?</span>
+                  </label>
+                  <select id="provider-c" title="เลือกค่าย AI สำหรับ Context C">
+                    <option value="chatgpt" selected>ChatGPT (OpenAI)</option>
+                    <option value="claude">Claude (Anthropic)</option>
+                    <option value="gemini">Gemini (Google)</option>
+                    <option value="glm">GLM (Zhipu)</option>
+                    <option value="deepseek">DeepSeek</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="provider-d" title="เลือกเว็บแชต AI สำหรับบทบาท Context D (Reviewer - ผู้ทบทวนอิสระ)" data-tooltip="ผู้ให้บริการ AI สำหรับบทบาท D (ผู้ทบทวน)">
+                    Context D Provider <span class="tooltip-badge" title="บทบาท D (Reviewer): ท้าทายข้อขัดแย้ง ตรวจสอบกรณีขอบ และข้อจำกัด">?</span>
+                  </label>
+                  <select id="provider-d" title="เลือกค่าย AI สำหรับ Context D">
+                    <option value="gemini" selected>Gemini (Google)</option>
+                    <option value="claude">Claude (Anthropic)</option>
+                    <option value="chatgpt">ChatGPT (OpenAI)</option>
+                    <option value="glm">GLM (Zhipu)</option>
+                    <option value="deepseek">DeepSeek</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="scenario" title="โจทย์และสถานการณ์ทำงาน (Task Brief & Input Scenario): รายละเอียดงานที่ต้องการให้ AI ทั้ง 3 บทบาทช่วยวิเคราะห์" data-tooltip="ระบุรายละเอียดโจทย์หรือปัญหาที่ต้องการให้ AI วิเคราะห์">
+                  Task Brief &amp; Input Scenario <span class="tooltip-badge" title="คำอธิบายโจทย์ ขอบเขต และข้อกำหนดที่จะถูกส่งไปพร้อมลายเซ็น SHA-256">?</span>
+                </label>
+                <textarea id="scenario" rows="3" required title="พิมพ์คำอธิบายงานหรือโจทย์ที่ต้องการวิเคราะห์" placeholder="Enter research, architecture, or audit scenario...">Analyze multi-agent architecture and verify zero-mutation safety boundary constraints.</textarea>
+              </div>
+
+              <div class="form-actions">
+                <span class="help-text" title="ระบบสร้างชุดคำสั่ง 3 ชุดพร้อม SHA-256 และแยกบริบทอ้างอิงเพื่อป้องกัน Prompt Injection">Generates 3 cryptographic SHA-256 work packets with untrusted reference boundaries.</span>
+                <button type="submit" class="btn btn-primary" title="กดเพื่อสร้าง Work Packet ทั้ง 3 บทบาท (B/C/D) พร้อมปุ่มคัดลอก 1-Click" data-tooltip="สร้างใบสั่งงาน B/C/D พร้อมลายเซ็น SHA-256">Dispatch Job Packets ↗</button>
+              </div>
+            </form>
+          </section>
+
+          <!-- Section 2: Active Job Relay Cards -->
+          <section id="active-job-panel" class="card-panel hidden">
+            <div class="panel-header">
+              <div>
+                <span class="badge-num">02 / ACTIVE RELAY</span>
+                <h2 id="active-job-title" title="กระดานส่งต่อคำสั่งงานปัจจุบัน (Active Relay): คัดลอก Prompt ไปวางในเว็บ AI และนำ JSON คำตอบกลับมาส่งที่นี่" data-tooltip="จัดการคัดลอก Prompt และวางคำตอบ JSON ของงานปัจจุบัน">Job Details</h2>
+              </div>
+              <div class="job-meta">
+                <span>JOB ID: <code id="active-job-id">-</code></span>
+                <span>MODEL: <span id="active-job-model" class="badge model-badge flash">gemini-3.8-flash</span></span>
+                <span>STATUS: <span id="active-job-status" class="status-tag">PENDING</span></span>
+                <button id="refresh-job-btn" class="btn btn-ghost btn-sm" type="button" title="รีเฟรชสถานะของงานปัจจุบันจากเซิร์ฟเวอร์">↻ Refresh</button>
+              </div>
+            </div>
+
+            <div class="worker-cards-grid">
+              <!-- Context B Card -->
+              <article class="worker-card" data-role="B" title="การ์ดบทบาท B (Analyst): คัดลอก Prompt ไปวางในเว็บ AI และนำผลลัพธ์ JSON กลับมาวางด้านล่าง">
+                <div class="card-top">
+                  <div class="role-identity">
+                    <span class="role-badge role-b">B</span>
+                    <div>
+                      <h3 id="role-title-B">Analyst</h3>
+                      <span class="role-sub" id="prov-B">Provider: Claude</span>
+                    </div>
+                  </div>
+                  <span id="slot-status-B" class="status-tag pending">pending</span>
+                </div>
+                <p class="role-desc">Analyze assigned research problem and state supported findings with verifiable evidence.</p>
+                <button type="button" class="btn btn-copy copy-prompt-btn" data-role="B" title="คัดลอกชุดคำสั่งของบทบาท B ไปยัง Clipboard ทันที">📋 1-Click Copy Prompt for B</button>
+                <div class="paste-zone">
+                  <label for="reply-text-B" title="วางข้อความ JSON ที่ได้จาก AI บทบาท B เพื่อตรวจสอบ SHA-256 และบันทึก">Paste B's JSON Response:</label>
+                  <textarea id="reply-text-B" rows="4" spellcheck="false" placeholder='{"protocol":"ai-subagent-webui-v1", ...}'></textarea>
+                  <button type="button" class="btn btn-submit submit-reply-btn" data-role="B" title="ตรวจสอบลายเซ็นและบันทึกคำตอบของบทบาท B">Submit B Response →</button>
+                </div>
+                <div id="reply-note-B" class="reply-note"></div>
+              </article>
+
+              <!-- Context C Card -->
+              <article class="worker-card" data-role="C" title="การ์ดบทบาท C (Verifier): คัดลอก Prompt ไปวางในเว็บ AI และนำผลลัพธ์ JSON กลับมาวางด้านล่าง">
+                <div class="card-top">
+                  <div class="role-identity">
+                    <span class="role-badge role-c">C</span>
+                    <div>
+                      <h3 id="role-title-C">Verifier</h3>
+                      <span class="role-sub" id="prov-C">Provider: ChatGPT</span>
+                    </div>
+                  </div>
+                  <span id="slot-status-C" class="status-tag pending">pending</span>
+                </div>
+                <p class="role-desc">Check numbers, evidence gaps, assumptions, and consistency.</p>
+                <button type="button" class="btn btn-copy copy-prompt-btn" data-role="C" title="คัดลอกชุดคำสั่งของบทบาท C ไปยัง Clipboard ทันที">📋 1-Click Copy Prompt for C</button>
+                <div class="paste-zone">
+                  <label for="reply-text-C" title="วางข้อความ JSON ที่ได้จาก AI บทบาท C เพื่อตรวจสอบ SHA-256 และบันทึก">Paste C's JSON Response:</label>
+                  <textarea id="reply-text-C" rows="4" spellcheck="false" placeholder='{"protocol":"ai-subagent-webui-v1", ...}'></textarea>
+                  <button type="button" class="btn btn-submit submit-reply-btn" data-role="C" title="ตรวจสอบลายเซ็นและบันทึกคำตอบของบทบาท C">Submit C Response →</button>
+                </div>
+                <div id="reply-note-C" class="reply-note"></div>
+              </article>
+
+              <!-- Context D Card -->
+              <article class="worker-card" data-role="D" title="การ์ดบทบาท D (Reviewer): คัดลอก Prompt ไปวางในเว็บ AI และนำผลลัพธ์ JSON กลับมาวางด้านล่าง">
+                <div class="card-top">
+                  <div class="role-identity">
+                    <span class="role-badge role-d">D</span>
+                    <div>
+                      <h3 id="role-title-D">Reviewer</h3>
+                      <span class="role-sub" id="prov-D">Provider: Gemini</span>
+                    </div>
+                  </div>
+                  <span id="slot-status-D" class="status-tag pending">pending</span>
+                </div>
+                <p class="role-desc">Challenge contradictions, source quality, edge cases, and limitations.</p>
+                <button type="button" class="btn btn-copy copy-prompt-btn" data-role="D" title="คัดลอกชุดคำสั่งของบทบาท D ไปยัง Clipboard ทันที">📋 1-Click Copy Prompt for D</button>
+                <div class="paste-zone">
+                  <label for="reply-text-D" title="วางข้อความ JSON ที่ได้จาก AI บทบาท D เพื่อตรวจสอบ SHA-256 และบันทึก">Paste D's JSON Response:</label>
+                  <textarea id="reply-text-D" rows="4" spellcheck="false" placeholder='{"protocol":"ai-subagent-webui-v1", ...}'></textarea>
+                  <button type="button" class="btn btn-submit submit-reply-btn" data-role="D" title="ตรวจสอบลายเซ็นและบันทึกคำตอบของบทบาท D">Submit D Response →</button>
+                </div>
+                <div id="reply-note-D" class="reply-note"></div>
+              </article>
+            </div>
+
+            <!-- Section 3: Synthesis & Bundle Export -->
+            <div class="synthesis-panel" title="ส่วนสังเคราะห์ผลลัพธ์ (Synthesis & Review): รวมคำตอบที่ผ่านการตรวจสอบครบทั้ง 3 บทบาทเป็น JSON Bundle">
+              <div class="synthesis-header">
+                <div>
+                  <span class="badge-num">03 / SYNTHESIS &amp; REVIEW</span>
+                  <h3 title="รวมผลลัพธ์จาก B/C/D ที่ผ่านการตรวจสอบ SHA-256 แล้ว เพื่อนำไปส่งต่อให้ Reviewer/Orchestrator" data-tooltip="รวมคำตอบที่ผ่านการตรวจสอบแล้วทั้ง 3 บริบท">Verified Multi-Context Bundle</h3>
+                </div>
+                <div class="bundle-actions">
+                  <button id="copy-bundle-btn" class="btn btn-primary btn-sm" disabled title="คัดลอก Verified Bundle ทั้งหมดไปยัง Clipboard">📋 Copy Verified Bundle</button>
+                  <button id="download-bundle-btn" class="btn btn-ghost btn-sm" disabled title="ดาวน์โหลด Verified Bundle เป็นไฟล์ JSON">↓ Export JSON Bundle</button>
+                </div>
+              </div>
+              <pre id="bundle-preview" class="code-preview">Submit validated responses from all 3 contexts to unlock synthesis bundle.</pre>
+            </div>
+          </section>
+
+          <!-- Section 4: Shared Registry -->
+          <section class="card-panel">
+            <div class="panel-header">
+              <div>
+                <span class="badge-num">04 / SHARED REFERENCES</span>
+                <h2 title="คลังข้อมูลอ้างอิงกลาง (Shared References): จัดเก็บ Skill, Tool, Hook และ Knowledge พร้อมรหัสแฮช SHA-256 สำหรับใช้ร่วมกัน" data-tooltip="คลังเอกสารอ้างอิงกลางพร้อมตรวจสอบ SHA-256 (ไม่รันโค้ดอัตโนมัติ)">
+                  Skills · Tools · Hooks · Knowledge Registry <span class="tooltip-badge" title="บันทึกข้อมูลอ้างอิงกลาง เช่น เช็กลิสต์ความปลอดภัยหรือสเปก API โดยระบบจะเข้ารหัส SHA-256 กำกับไว้เสมอ">?</span>
+                </h2>
+              </div>
+              <button id="refresh-registry-btn" class="btn btn-ghost btn-sm" type="button" title="โหลดรายการเอกสารอ้างอิงล่าสุดจากคลังกลาง">↻ Refresh Catalog</button>
+            </div>
+
+            <form id="add-asset-form">
+              <div class="form-grid-4">
+                <div class="form-group">
+                  <label for="asset-kind" title="ประเภทของข้อมูลอ้างอิง (Skill, Tool, Hook, Knowledge)" data-tooltip="เลือกหมวดหมู่ของเอกสารอ้างอิง">
+                    Kind <span class="tooltip-badge" title="Skill = ทักษะ, Tool = คำอธิบายเครื่องมือ, Hook = กฎควบคุม, Knowledge = องค์ความรู้">?</span>
+                  </label>
+                  <select id="asset-kind" title="เลือกประเภทของเอกสารอ้างอิง">
+                    <option value="skill">Skill</option>
+                    <option value="tool">Tool</option>
+                    <option value="hook">Hook</option>
+                    <option value="knowledge" selected>Knowledge</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="asset-id" title="รหัสอ้างอิงเฉพาะของเอกสาร (Asset Identifier): ใช้ตัวอักษรภาษาอังกฤษ ตัวเลข - หรือ _" data-tooltip="รหัสเฉพาะของเอกสารอ้างอิง">
+                    Asset Identifier <span class="tooltip-badge" title="รหัสอ้างอิง เช่น audit-checklist (2-64 ตัวอักษรภาษาอังกฤษ/ตัวเลข/-/_)">?</span>
+                  </label>
+                  <input id="asset-id" required pattern="[0-9a-zA-Z_-]{2,64}" placeholder="e.g. audit-checklist" title="ระบุรหัสเอกสารอ้างอิง">
+                </div>
+                <div class="form-group">
+                  <label for="asset-title" title="ชื่อหัวข้อของเอกสารอ้างอิง" data-tooltip="ชื่อหัวข้อเอกสารสำหรับแสดงผล">
+                    Title <span class="tooltip-badge" title="ชื่อที่อ่านเข้าใจง่าย เช่น Safety Boundary Checklist">?</span>
+                  </label>
+                  <input id="asset-title" required placeholder="Safety Boundary Checklist" title="ระบุชื่อหัวข้อของเอกสาร">
+                </div>
+                <div class="form-group">
+                  <label for="asset-scope" title="ขอบเขตการใช้งาน: shared สำหรับทุกโปรเจกต์ หรือระบุ project_id เฉพาะ" data-tooltip="ขอบเขตการใช้งาน (shared หรือระบุ project_id)">
+                    Scope <span class="tooltip-badge" title="ใส่ shared เพื่อแชร์ทุกโปรเจกต์ หรือระบุชื่อโปรเจกต์เฉพาะ">?</span>
+                  </label>
+                  <input id="asset-scope" value="shared" placeholder="shared or project-id" title="กำหนดขอบเขตการใช้งานเอกสาร">
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="asset-content" title="เนื้อหาคำแนะนำ กฎ หรือโครงสร้างอ้างอิง (เก็บเป็นข้อความเท่านั้น ไม่รันอัตโนมัติ)" data-tooltip="เนื้อหาเอกสารอ้างอิง (ไม่ถูกนำไปรันเป็นโค้ดอัตโนมัติ)">
+                  Content (Instructions / Schema / Reference) <span class="tooltip-badge" title="เนื้อหาเอกสารที่จะถูกคำนวณ SHA-256 เพื่อป้องกันการแก้ไขโดยไม่ตั้งใจ">?</span>
+                </label>
+                <textarea id="asset-content" rows="3" required title="พิมพ์เนื้อหาเอกสารอ้างอิง" placeholder="Textual reference content. Immutable once saved."></textarea>
+              </div>
+
+              <div class="form-actions">
+                <span class="help-text">References are text documents verified by SHA-256 digests. Never auto-executed.</span>
+                <button type="submit" class="btn btn-primary btn-sm" title="บันทึกเอกสารอ้างอิงเข้าสู่คลังกลางพร้อมคำนวณ SHA-256">Save Reference Asset</button>
+              </div>
+            </form>
+
+            <div id="registry-items" class="registry-cards">
+              <span class="empty-hint">Loading registry items...</span>
+            </div>
+          </section>
+        </div>
+
+        <!-- TAB 2: MCP Integrations (Lnwjud & External MCPs) -->
+        <div id="tab-mcp" class="tab-panel hidden">
+          <section class="card-panel">
+            <div class="panel-header">
+              <div>
+                <span class="badge-num">05 / MCP INTEGRATIONS</span>
+                <h2 title="จัดการการเชื่อมต่อ MCP ภายนอก (External MCP Servers): รองรับ Lnwjud และเซิร์ฟเวอร์ stdio MCP อื่นๆ โดยบันทึกลง .runtime/mcp_configs/external.json" data-tooltip="ลงทะเบียนและทดสอบ External MCP Servers (เช่น Lnwjud)">
+                  External MCP Servers &amp; Lnwjud Bridge <span class="tooltip-badge" title="เชื่อมต่อ External MCP Servers เช่น Lnwjud (npx -y @engasnm111/lnwjud) ผ่าน proxy_mcp.py โดยเก็บค่าใน .runtime/mcp_configs/external.json">?</span>
+                </h2>
+              </div>
+              <div class="bundle-actions">
+                <button id="load-lnwjud-preset-btn" class="btn btn-ghost btn-sm" type="button" title="เติมค่าเริ่มต้นของ Lnwjud MCP (npx -y @engasnm111/lnwjud) ลงในฟอร์มทันที">⚡ Load Lnwjud Preset</button>
+                <button id="refresh-mcp-btn" class="btn btn-ghost btn-sm" type="button" title="รีเฟรชรายการ External MCP Servers จาก .runtime/mcp_configs/external.json">↻ Refresh Servers</button>
+              </div>
+            </div>
+
+            <form id="register-mcp-form">
+              <div class="form-grid-3">
+                <div class="form-group">
+                  <label for="mcp-server-name" title="ชื่ออ้างอิงเซิร์ฟเวอร์ MCP (เช่น lnwjud)" data-tooltip="ชื่อเรียกของ External MCP Server">
+                    Server Name <span class="tooltip-badge" title="ชื่ออ้างอิง 2-64 ตัวอักษร เช่น lnwjud">?</span>
+                  </label>
+                  <input id="mcp-server-name" required pattern="[0-9a-zA-Z_-]{2,64}" placeholder="lnwjud" title="ระบุชื่อเซิร์ฟเวอร์ MCP">
+                </div>
+                <div class="form-group">
+                  <label for="mcp-server-command" title="คำสั่งรันหลักของ MCP Server เช่น npx, python, node" data-tooltip="คำสั่งหลักที่ใช้เปิดเซิร์ฟเวอร์ MCP">
+                    Command <span class="tooltip-badge" title="คำสั่ง Executable เช่น npx หรือ python">?</span>
+                  </label>
+                  <input id="mcp-server-command" required placeholder="npx" title="ระบุคำสั่งรัน เช่น npx">
+                </div>
+                <div class="form-group">
+                  <label for="mcp-server-args" title="อาร์กิวเมนต์ของคำสั่ง คั่นด้วยช่องว่าง เช่น -y @engasnm111/lnwjud" data-tooltip="รายการอาร์กิวเมนต์ของคำสั่ง MCP">
+                    Arguments <span class="tooltip-badge" title="อาร์กิวเมนต์คั่นด้วยช่องว่าง เช่น -y @engasnm111/lnwjud">?</span>
+                  </label>
+                  <input id="mcp-server-args" placeholder="-y @engasnm111/lnwjud" title="ระบุอาร์กิวเมนต์ เช่น -y @engasnm111/lnwjud">
+                </div>
+              </div>
+
+              <div class="form-grid-2">
+                <div class="form-group">
+                  <label for="mcp-server-desc" title="คำอธิบายหน้าที่ของเซิร์ฟเวอร์ MCP นี้" data-tooltip="คำอธิบายเพิ่มเติมของเซิร์ฟเวอร์">
+                    Description
+                  </label>
+                  <input id="mcp-server-desc" placeholder="Lnwjud External MCP Server (@engasnm111/lnwjud)" title="คำอธิบายสั้นๆ ของเซิร์ฟเวอร์ MCP">
+                </div>
+                <div class="form-group">
+                  <label for="mcp-server-enabled" title="เปิดหรือปิดการใช้งานเซิร์ฟเวอร์ MCP นี้ใน Proxy" data-tooltip="เลือกเปิด/ปิดการใช้งานใน Proxy">
+                    Status
+                  </label>
+                  <select id="mcp-server-enabled" title="สถานะการเปิดใช้งานเซิร์ฟเวอร์">
+                    <option value="true" selected>Enabled (Active in Proxy)</option>
+                    <option value="false">Disabled</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <span class="help-text" title="ค่าทั้งหมดถูกบันทึกอย่างปลอดภัยใน .runtime/mcp_configs/external.json และป้องกันการเข้าถึงพอร์ต 9121 หรือ REA Project">Saved to <code>.runtime/mcp_configs/external.json</code> (Port 9121 &amp; REA Project blocked).</span>
+                <div class="bundle-actions">
+                  <button id="probe-mcp-form-btn" type="button" class="btn btn-ghost btn-sm" title="ทดสอบความพร้อมของคำสั่ง MCP ที่กรอกในฟอร์ม">🔍 Probe Command</button>
+                  <button type="submit" class="btn btn-primary btn-sm" title="บันทึกการตั้งค่าเซิร์ฟเวอร์ MCP ลงใน external.json">Save MCP Server</button>
+                </div>
+              </div>
+            </form>
+
+            <div id="external-mcp-list" class="registry-cards">
+              <span class="empty-hint">Loading external MCP servers...</span>
+            </div>
+
+            <div class="synthesis-panel" style="margin-top: 16px;">
+              <div class="synthesis-header">
+                <div>
+                  <span class="badge-num">MCP PROBE OUTPUT</span>
+                  <h3>Connection &amp; Discovery Result</h3>
+                </div>
+              </div>
+              <pre id="mcp-probe-output" class="code-preview">Click "Probe" on any registered server (or Lnwjud preset) to verify executable readiness and JSON-RPC handshake.</pre>
+            </div>
+          </section>
+        </div>
+
+        <!-- TAB 3: Settings -->
+        <div id="tab-settings" class="tab-panel hidden">
+          <section class="card-panel">
+            <div class="panel-header">
+              <div>
+                <span class="badge-num">06 / SETTINGS</span>
+                <h2 title="ตั้งค่าระบบ (Settings): จัดการ Active Working Directory, รายชื่อ External MCP Servers และสิทธิ์ Model Policy Overrides" data-tooltip="ตั้งค่า Working Directory, External MCP และ Model Policy Overrides">
+                  Dashboard &amp; Workspace Settings <span class="tooltip-badge" title="จัดการค่า Active Working Directory, External MCP Servers และ Model Policy Overrides (สำหรับ Reviewer เท่านั้น)">?</span>
+                </h2>
+              </div>
+              <div class="job-meta">
+                <label for="settings-user-role" title="บทบาทผู้ใช้งานปัจจุบัน (Role): เฉพาะสิทธิ์ reviewer เท่านั้นที่แก้ไข Model Policy Overrides ได้" style="margin:0;">Active Role:</label>
+                <select id="settings-user-role" title="เลือกบทบาทผู้ใช้งาน (operator หรือ reviewer)" style="padding:4px 8px; font-size:12px;">
+                  <option value="operator" selected>operator (Standard)</option>
+                  <option value="reviewer">reviewer (Policy Review &amp; Merge)</option>
+                </select>
+              </div>
+            </div>
+
+            <form id="settings-form">
+              <div class="settings-block" title="ตั้งค่า Active Working Directory: ระบบใช้ PathGuard ตรวจสอบอย่างเข้มงวด ห้ามออกนอก WebUI_Control_AI หรือเข้าถึงโฟลเดอร์ต้องห้าม">
+                <h3>1. Working Directory (`working_directory`)</h3>
+                <p class="role-desc">กำหนดโฟลเดอร์ทำงานปัจจุบัน ระบบ PathGuard จะไม่อนุญาตให้ตั้งค่านอกโฟลเดอร์โครงการหรือเข้าถึงโฟลเดอร์ต้องห้าม (`.git`, `.runtime/keys`, `REA Project`)</p>
+                <div class="form-group">
+                  <label for="settings-workdir-input" title="ระบุเส้นทางโฟลเดอร์ทำงานภายใน WebUI_Control_AI">Active Working Directory Path</label>
+                  <input id="settings-workdir-input" required placeholder="." title="ระบุพาธของ Working Directory ที่ต้องการใช้งาน">
+                </div>
+              </div>
+
+              <div class="settings-block" title="จัดการโครงสร้าง JSON ของ External MCP Servers ทั้งหมด (ซิงค์กับ .runtime/mcp_configs/external.json และฐานข้อมูล)">
+                <h3>2. External MCP Servers (`external_mcp_servers`)</h3>
+                <p class="role-desc">แก้ไขรายการ External MCP Servers (เช่น Lnwjud) ในรูปแบบ JSON ซึ่งจะซิงค์ไปยัง `.runtime/mcp_configs/external.json` และฐานข้อมูล SQLite</p>
+                <div class="form-group">
+                  <label for="settings-external-mcp-json" title="โครงสร้าง JSON ของ External MCP Servers">External MCP Servers Map (JSON)</label>
+                  <textarea id="settings-external-mcp-json" rows="6" spellcheck="false" title="ระบุ JSON object ของ external_mcp_servers"></textarea>
+                </div>
+              </div>
+
+              <div class="settings-block" title="Model Policy Overrides: ปรับแต่งนโยบายโมเดลได้เฉพาะผู้ที่มีบทบาท reviewer เท่านั้น">
+                <div class="card-top" style="margin-bottom:8px;">
+                  <h3>3. Model Policy Overrides (`model_policy_overrides`)</h3>
+                  <span id="policy-role-lock-badge" class="status-tag blocked">LOCKED (REQUIRES REVIEWER ROLE)</span>
+                </div>
+                <p id="policy-role-hint" class="role-desc">เฉพาะผู้ใช้งานที่มีสิทธิ์ <code>reviewer</code> เท่านั้นจึงจะสามารถแก้ไข Model Policy Overrides ได้ (เพื่อป้องกันไม่ให้ Worker ปรับสิทธิ์ใช้ Gemini 4 Argon เอง)</p>
+                <div class="form-grid-2">
+                  <div class="form-group">
+                    <label for="settings-default-worker-model" title="กำหนดโมเดลเริ่มต้นสำหรับ Worker">Default Worker Model Override</label>
+                    <select id="settings-default-worker-model" disabled>
+                      <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                      <option value="gemini-4-hydrogen">gemini-4-hydrogen</option>
+                      <option value="claude-sonnet-5.5">claude-sonnet-5.5</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="settings-allow-argon-override" title="อนุญาตให้ Argon ทำงานในโหมด Reviewer Override หรือไม่">Argon Override Mode</label>
+                    <select id="settings-allow-argon-override" disabled>
+                      <option value="false" selected>False (Strict Review &amp; Merge Only)</option>
+                      <option value="true">True (Reviewer Emergency Override)</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group" style="margin-top:10px;">
+                  <label for="settings-policy-notes" title="หมายเหตุเหตุผลในการปรับแต่ง Policy">Policy Override Notes</label>
+                  <input id="settings-policy-notes" disabled placeholder="Reason for policy override (reviewer audit log)" title="บันทึกเหตุผลการปรับนโยบายโมเดล">
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <span id="settings-status-banner" class="help-text">Settings are persisted in SQLite WAL DB (`dashboard_settings.db`).</span>
+                <div class="bundle-actions">
+                  <button id="reload-settings-btn" type="button" class="btn btn-ghost btn-sm" title="โหลดค่าล่าสุดจากฐานข้อมูล">↻ Reload Settings</button>
+                  <button id="save-settings-btn" type="submit" class="btn btn-primary" title="บันทึกการตั้งค่าทั้งหมดลงฐานข้อมูล SQLite">Save Settings ✓</button>
+                </div>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
+
+      <div id="toast" class="toast hidden"></div>
+    </main>
+  </div>
+</body>
+</html>

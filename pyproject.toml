@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webui-control-ai"
+version = "0.1.0"
+description = "Open Multi-Engine Autonomous Orchestra for WebUI and Local CLI Agents"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [
+    { name = "Google DeepMind / Antigravity Team" }
+]
+keywords = [
+    "orchestrator",
+    "agentic-ai",
+    "webui-control",
+    "cli-harness",
+    "mcp",
+    "zero-dependency"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: Microsoft :: Windows"
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+orchestra = "src.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

@@ -1,0 +1,630 @@
+{
+  "$schema": "./job_contract.schema.json",
+  "version": "2.0.0",
+  "plan_id": "REA-ORCH-2026",
+  "project_id": "WebUI_Control_AI",
+  "total_jobs": 11,
+  "contracts": [
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-0",
+      "job_id": "ORCH-001",
+      "batch_id": "B0",
+      "batch_ordinal": 1,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Initialize foundation configs, CLI wrappers, preflight doctor, and documentation",
+      "in_scope": [
+        "pyproject.toml",
+        ".gitignore",
+        "README.md",
+        "bin/*",
+        "config/*",
+        "docs/*"
+      ],
+      "out_of_scope": [
+        "src/state/*",
+        "src/workers/*",
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        ".",
+        "config",
+        "bin",
+        "docs"
+      ],
+      "allowed_write_paths": [
+        "pyproject.toml",
+        ".gitignore",
+        "README.md",
+        "bin/orchestra.cmd",
+        "bin/dsh-cli.cmd",
+        "bin/opencode-cli.cmd",
+        "bin/hermes-cli.cmd",
+        "bin/agy-cli.cmd",
+        "config/harnesses.json",
+        "config/browser_targets.example.json",
+        "docs/USER_MANUAL_TH.md",
+        "docs/architecture/ADR-001-open-multi-orchestra.md",
+        "docs/architecture/DISCOVERY_INVENTORY_2026-11-13.json"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python",
+        "node",
+        "bun",
+        "git",
+        "cmd"
+      ],
+      "dependencies": [],
+      "acceptance_checks": [
+        {
+          "name": "Doctor Check",
+          "command": "python -m src.cli.doctor",
+          "expected_exit_code": 0
+        },
+        {
+          "name": "DSH CLI Help",
+          "command": "cmd /c bin\\dsh-cli.cmd --profile headless --help",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "docs/architecture/DISCOVERY_INVENTORY_2026-11-13.json"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "16d79200f1aa1b03ade9f4ad2898e906681919c996fc5b7d7fb1ab447690a2ce"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-0",
+      "job_id": "ORCH-002",
+      "batch_id": "B0",
+      "batch_ordinal": 2,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement JobContract models, canonical SHA-256 integrity signing, and DAG validation",
+      "in_scope": [
+        "contracts/*",
+        "src/contracts/*"
+      ],
+      "out_of_scope": [
+        "src/orchestra/*",
+        "src/qa/*"
+      ],
+      "allowed_read_paths": [
+        "contracts",
+        "src/contracts"
+      ],
+      "allowed_write_paths": [
+        "contracts/job_contract.schema.json",
+        "contracts/REA_ORCHESTRA_JOB_BACKLOG_V2.json",
+        "src/contracts/__init__.py",
+        "src/contracts/models.py",
+        "src/contracts/validator.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-001"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "Contract Unit Tests",
+          "command": "python -m unittest tests/test_contracts.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "contracts/REA_ORCHESTRA_JOB_BACKLOG_V2.json"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "5b2ca3cd6b69310422735a1cc60f0c4ee893b080657177f36a829ce38fe17c75"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-1",
+      "job_id": "ORCH-101",
+      "batch_id": "B1",
+      "batch_ordinal": 1,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement SQLite backed state storage and deterministic FSM transitions",
+      "in_scope": [
+        "src/state/*"
+      ],
+      "out_of_scope": [
+        "src/webui/*",
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "src/contracts",
+        "src/state"
+      ],
+      "allowed_write_paths": [
+        "src/state/__init__.py",
+        "src/state/fsm.py",
+        "src/state/db.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-002"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "State FSM Tests",
+          "command": "python -m unittest tests/test_state_fsm.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        ".runtime/orchestra_state.db"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "f1973e53670ce0ffc1db710147b80f2dc7ae377c99563e939890703702b03c2b"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-1",
+      "job_id": "ORCH-102",
+      "batch_id": "B1",
+      "batch_ordinal": 2,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement disposable sandbox workspaces, path confinement and boundary protection",
+      "in_scope": [
+        "src/sandbox/*"
+      ],
+      "out_of_scope": [
+        "src/workers/*",
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        ".runtime/sandboxes",
+        "src/sandbox"
+      ],
+      "allowed_write_paths": [
+        "src/sandbox/__init__.py",
+        "src/sandbox/manager.py",
+        "src/sandbox/guard.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-101"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "Sandbox Security Tests",
+          "command": "python -m unittest tests/test_sandbox_security.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "tests/test_sandbox_security.py"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "f916b1faf6802a7c330c4cc6f7f2123272a67cdbe74f5a105ce20e7d1f7e8f9b"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-2",
+      "job_id": "ORCH-201",
+      "batch_id": "B2",
+      "batch_ordinal": 1,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement local CLI harness adapters for Antigravity, OpenCode, Hermes, and DSH",
+      "in_scope": [
+        "src/workers/*"
+      ],
+      "out_of_scope": [
+        "src/webui/*",
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "config/harnesses.json",
+        "src/workers"
+      ],
+      "allowed_write_paths": [
+        "src/workers/__init__.py",
+        "src/workers/cli_adapters.py",
+        "src/workers/runner.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-102"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "CLI Harness Tests",
+          "command": "python -m unittest tests/test_cli_workers.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "tests/test_cli_workers.py"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "b06ba5d02f368331f6041d34708e5be93bbd86c65d10d6bd0966f3a4eb9c6d93"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-2",
+      "job_id": "ORCH-202",
+      "batch_id": "B2",
+      "batch_ordinal": 2,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement WebUI provider dispatchers, CDP automation, and packet copy-paste generator",
+      "in_scope": [
+        "src/webui/*"
+      ],
+      "out_of_scope": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "config/browser_targets.example.json",
+        "src/webui"
+      ],
+      "allowed_write_paths": [
+        "src/webui/__init__.py",
+        "src/webui/providers.py",
+        "src/webui/cdp_driver.py",
+        "src/webui/packet_gen.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-201"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "WebUI Dispatcher Tests",
+          "command": "python -m unittest tests/test_webui_providers.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "tests/test_webui_providers.py"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "8511629d370be5505a771d7804086ee23f89015739a0be46f628efff0a211091"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-3",
+      "job_id": "ORCH-301",
+      "batch_id": "B3",
+      "batch_ordinal": 1,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement deterministic QA Acceptance Gate and check execution engine",
+      "in_scope": [
+        "src/qa/*"
+      ],
+      "out_of_scope": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "src/contracts",
+        "src/qa"
+      ],
+      "allowed_write_paths": [
+        "src/qa/__init__.py",
+        "src/qa/gate.py",
+        "src/qa/runner.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-202"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "QA Gate Acceptance Tests",
+          "command": "python -m unittest tests/test_qa_acceptance.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "tests/test_qa_acceptance.py"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "c209eb027953298fc17ff05d373c1046aab5e71194b0d4c74164f33e852173c2"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-3",
+      "job_id": "ORCH-302",
+      "batch_id": "B3",
+      "batch_ordinal": 2,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement failure classifier and automated rework/retry repair loop",
+      "in_scope": [
+        "src/orchestra/repair.py"
+      ],
+      "out_of_scope": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "src/qa",
+        "src/orchestra"
+      ],
+      "allowed_write_paths": [
+        "src/orchestra/__init__.py",
+        "src/orchestra/repair.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-301"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "Repair Classifier Tests",
+          "command": "python -m unittest tests/test_repair_loop.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "tests/test_repair_loop.py"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "8bc854ff8162a59a66ce4582d32213b11f31021e5e6c45c2ec78cf1ad549f264"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-4",
+      "job_id": "ORCH-401",
+      "batch_id": "B4",
+      "batch_ordinal": 1,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement end-to-end supervisor, Two-Job Batch Gate, and verifiable handoff generator",
+      "in_scope": [
+        "src/orchestra/supervisor.py",
+        "src/handoff/*"
+      ],
+      "out_of_scope": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "src/state",
+        "src/handoff",
+        "src/orchestra"
+      ],
+      "allowed_write_paths": [
+        "src/orchestra/supervisor.py",
+        "src/handoff/__init__.py",
+        "src/handoff/generator.py",
+        "src/handoff/verifier.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-302"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "Supervisor Handoff Tests",
+          "command": "python -m unittest tests/test_supervisor_handoff.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "tests/test_supervisor_handoff.py"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "0f0243b19083709e171f78e6b222f652f2c2fe7ec53ef5f557bfb11f3835b18a"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-4",
+      "job_id": "ORCH-402",
+      "batch_id": "B4",
+      "batch_ordinal": 2,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement isolated REA Pilot runner and zero-mutation boundary verification",
+      "in_scope": [
+        "src/integrations/rea_pilot.py",
+        "tests/e2e/test_rea_isolated_pilot.py"
+      ],
+      "out_of_scope": [
+        "Direct mutation of O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "O:\\AI_Workspace\\REA Project\\OpenCodeREA\\SummoningRemake",
+        "src/integrations"
+      ],
+      "allowed_write_paths": [
+        "src/integrations/__init__.py",
+        "src/integrations/rea_pilot.py",
+        "tests/e2e/test_rea_isolated_pilot.py",
+        "docs/pilot/REA_PILOT_GO_NO_GO_REPORT.md"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python",
+        "git"
+      ],
+      "dependencies": [
+        "ORCH-401"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "Isolated REA Pilot Test",
+          "command": "python -m unittest tests/e2e/test_rea_isolated_pilot.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "docs/pilot/REA_PILOT_GO_NO_GO_REPORT.md"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "af91b7048113b97f7b53c88e73934930cb0611eb97259bb28dc25757d7d50d06"
+    },
+    {
+      "schema_version": "1.0.0",
+      "plan_id": "REA-ORCH-2026",
+      "phase_id": "PHASE-5",
+      "job_id": "ORCH-501",
+      "batch_id": "B5",
+      "batch_ordinal": 1,
+      "project_id": "WebUI_Control_AI",
+      "workspace_root_ref": ".",
+      "goal": "Implement lightweight local HTTP dashboard and real-time SSE job event monitor",
+      "in_scope": [
+        "src/webui/dashboard_server.py"
+      ],
+      "out_of_scope": [
+        "External pip dependencies",
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_read_paths": [
+        "src/state",
+        "src/webui"
+      ],
+      "allowed_write_paths": [
+        "src/webui/dashboard_server.py"
+      ],
+      "forbidden_write_roots": [
+        "O:\\AI_Workspace\\REA Project"
+      ],
+      "allowed_commands": [
+        "python"
+      ],
+      "dependencies": [
+        "ORCH-402"
+      ],
+      "acceptance_checks": [
+        {
+          "name": "Dashboard Server Health",
+          "command": "python -m unittest tests/test_dashboard_server.py",
+          "expected_exit_code": 0
+        }
+      ],
+      "required_evidence": [
+        "src/webui/dashboard_server.py"
+      ],
+      "max_rework_cycles": 3,
+      "max_infra_retries": 2,
+      "timeout_seconds": 180,
+      "role_d_review_required": false,
+      "approval_state": "APPROVED",
+      "approved_by": "coordinator",
+      "approved_at": "2026-11-13T01:20:00Z",
+      "contract_sha256": "c33ffd9e7d7fac6553fd61353a3a644cc95a7e7d6df53a3063eabf86ee7193eb"
+    }
+  ]
+}

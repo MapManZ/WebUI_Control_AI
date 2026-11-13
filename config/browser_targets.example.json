@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "providers": {
+    "chatgpt": {
+      "name": "ChatGPT (OpenAI)",
+      "url": "https://chatgpt.com/",
+      "fallback_urls": ["https://chat.openai.com/"],
+      "selectors": {
+        "input": "#prompt-textarea",
+        "send": "button[data-testid='send-button']",
+        "assistant": "div[data-message-author-role='assistant']"
+      },
+      "delivery_modes": ["cdp", "mcp", "packet_copy_paste"],
+      "model_selection": {
+        "dropdown": "button[data-testid='model-switcher-dropdown']",
+        "default_model": "gpt-4o"
+      }
+    },
+    "claude": {
+      "name": "Claude (Anthropic)",
+      "url": "https://claude.ai/",
+      "fallback_urls": ["https://claude.ai/new"],
+      "selectors": {
+        "input": "div[contenteditable='true'].ProseMirror",
+        "send": "button[aria-label='Send Message']",
+        "assistant": "div[data-is-streaming='false'] .font-claude-message"
+      },
+      "delivery_modes": ["cdp", "mcp", "packet_copy_paste"],
+      "model_selection": {
+        "dropdown": "button[data-testid='model-selector']",
+        "default_model": "claude-3-7-sonnet"
+      }
+    },
+    "gemini": {
+      "name": "Gemini (Google)",
+      "url": "https://gemini.google.com/",
+      "fallback_urls": ["https://gemini.google.com/app"],
+      "selectors": {
+        "input": "div.ql-editor[contenteditable='true']",
+        "send": "button.send-button",
+        "assistant": "message-content.model-response-text"
+      },
+      "delivery_modes": ["cdp", "mcp", "packet_copy_paste"],
+      "model_selection": {
+        "dropdown": "button[aria-label='Model selector']",
+        "default_model": "gemini-2.5-pro"
+      }
+    },
+    "glm": {
+      "name": "GLM (Zhipu AI)",
+      "url": "https://chat.z.ai/",
+      "fallback_urls": ["https://chatglm.cn/"],
+      "selectors": {
+        "input": "textarea[placeholder*='输入']",
+        "send": "button.enter-icon",
+        "assistant": "div.chat-message-assistant"
+      },
+      "delivery_modes": ["cdp", "mcp", "packet_copy_paste"],
+      "model_selection": {
+        "dropdown": "div.model-selector",
+        "default_model": "glm-4-plus"
+      }
+    },
+    "deepseek": {
+      "name": "DeepSeek Chat",
+      "url": "https://chat.deepseek.com/",
+      "fallback_urls": ["https://chat.deepseek.com/chat"],
+      "selectors": {
+        "input": "textarea#chat-input",
+        "send": "div[role='button'][aria-label='Send']",
+        "assistant": "div.ds-markdown"
+      },
+      "delivery_modes": ["cdp", "mcp", "packet_copy_paste"],
+      "model_selection": {
+        "dropdown": "div.model-selector-button",
+        "default_model": "deepseek-chat"
+      }
+    }
+  }
+}

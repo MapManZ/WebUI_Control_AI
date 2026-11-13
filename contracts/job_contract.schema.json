@@ -1,0 +1,161 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://antigravity.dev/schemas/job_contract.schema.json",
+  "title": "JobContract",
+  "description": "Schema definition for Open Multi-Engine Orchestra Job Contracts",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "plan_id",
+    "phase_id",
+    "job_id",
+    "batch_id",
+    "batch_ordinal",
+    "project_id",
+    "workspace_root_ref",
+    "goal",
+    "in_scope",
+    "out_of_scope",
+    "allowed_read_paths",
+    "allowed_write_paths",
+    "forbidden_write_roots",
+    "allowed_commands",
+    "dependencies",
+    "acceptance_checks",
+    "required_evidence",
+    "contract_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Contract schema version",
+      "default": "1.0.0"
+    },
+    "plan_id": {
+      "type": "string",
+      "description": "Master plan identifier"
+    },
+    "phase_id": {
+      "type": "string",
+      "description": "Phase identifier"
+    },
+    "job_id": {
+      "type": "string",
+      "description": "Unique job identifier (e.g. ORCH-001)"
+    },
+    "batch_id": {
+      "type": "string",
+      "description": "Batch identifier (e.g. B1, B2)"
+    },
+    "batch_ordinal": {
+      "type": "integer",
+      "description": "Position within batch (1 or 2)",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "project_id": {
+      "type": "string",
+      "description": "Project identifier (e.g. WebUI_Control_AI)"
+    },
+    "workspace_root_ref": {
+      "type": "string",
+      "description": "Reference path to workspace root"
+    },
+    "goal": {
+      "type": "string",
+      "description": "Concise statement of work and objective"
+    },
+    "in_scope": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Files, modules, or features explicitly in scope"
+    },
+    "out_of_scope": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Files, modules, or actions strictly forbidden"
+    },
+    "allowed_read_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths worker is permitted to read"
+    },
+    "allowed_write_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Relative paths worker is permitted to write/modify"
+    },
+    "forbidden_write_roots": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Absolute roots or project directories that must never be modified"
+    },
+    "allowed_commands": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Whitelisted command prefixes worker can execute"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of prerequisite job_ids that must be HANDOFF_VERIFIED before start"
+    },
+    "acceptance_checks": {
+      "type": "array",
+      "minItems": 1,
+      "description": "List of deterministic verification checks and exit codes",
+      "items": {
+        "type": "object",
+        "required": ["name", "command"],
+        "properties": {
+          "name": { "type": "string" },
+          "command": { "type": "string" },
+          "expected_exit_code": { "type": "integer", "default": 0 }
+        }
+      }
+    },
+    "required_evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Artifacts, logs, or receipts required for QA verification"
+    },
+    "max_rework_cycles": {
+      "type": "integer",
+      "default": 3,
+      "description": "Maximum number of code rework attempts before failing"
+    },
+    "max_infra_retries": {
+      "type": "integer",
+      "default": 2,
+      "description": "Maximum retries for transient infrastructure failures"
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "default": 180,
+      "description": "Maximum execution time in seconds"
+    },
+    "role_d_review_required": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether explicit human or Role D signoff is required"
+    },
+    "approval_state": {
+      "type": "string",
+      "enum": ["PENDING", "APPROVED", "REJECTED"],
+      "default": "APPROVED"
+    },
+    "approved_by": {
+      "type": "string",
+      "default": ""
+    },
+    "approved_at": {
+      "type": "string",
+      "default": ""
+    },
+    "contract_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Canonical SHA-256 digest sealing this contract"
+    }
+  }
+}
